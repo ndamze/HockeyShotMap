@@ -512,6 +512,11 @@ with left:
     mode = st.radio("Mode", ["Single day", "Date range"], horizontal=True)
     preset = st.session_state.pop("_preset", None)
 
+    # --- Cache buster ---
+if st.button("Force refresh (clear cache)"):
+    st.cache_data.clear()
+    st.experimental_rerun()
+
     if mode == "Single day":
         default = preset[1] if preset and preset[0] == "single" else _date.today()
         picked = st.date_input("Date", value=default, max_value=_date.today())
