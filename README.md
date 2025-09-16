@@ -1,6 +1,5 @@
 # Hockey Shot Map & Player Analysis
 [![Live Demo](https://img.shields.io/badge/Streamlit-Live%20App-brightgreen)](https://hockeyshotmap.streamlit.app)
-[![CI](https://github.com/SparkerData/HockeyShotMap/actions/workflows/ci.yml/badge.svg)](https://github.com/SparkerData/HockeyShotMap/actions/workflows/ci.yml)
 [![Nightly Refresh](https://github.com/SparkerData/HockeyShotMap/actions/workflows/refresh.yml/badge.svg)](https://github.com/SparkerData/HockeyShotMap/actions/workflows/refresh.yml)
 ![Python](https://img.shields.io/badge/python-3.11-blue.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
