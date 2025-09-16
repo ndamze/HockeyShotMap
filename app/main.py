@@ -673,7 +673,7 @@ with right:
             bgcolor="rgba(0,0,0,0)",
             borderwidth=0
         ),
-        hoverlabel=dict(font=dict(color="black")),
+        hoverlabel=dict(font=dict(color="white")),
     )
 
     if not filtered.empty:
