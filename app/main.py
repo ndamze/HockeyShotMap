@@ -60,6 +60,7 @@ def _rows_from_statsapi(feed: dict) -> list[dict]:
     return rows
 
 
+# ---------- GameCenter helpers ----------
 def _gc_team_maps(feed: dict) -> dict[int, str]:
     """Build team id -> abbrev map from GameCenter feed."""
     id_to_abbrev: dict[int, str] = {}
@@ -82,19 +83,93 @@ def _gc_team_maps(feed: dict) -> dict[int, str]:
     return id_to_abbrev
 
 
-def _infer_strength_from_skaters(det: dict) -> str:
-    """Derive 5v5/PP/PK from skater counts when explicit strength is missing."""
-    hs = det.get("homeSkaters")
-    as_ = det.get("awaySkaters")
-    if isinstance(hs, int) and isinstance(as_, int):
-        if hs == 5 and as_ == 5:
-            return "5v5"
-        if hs > as_:
-            return "PP" if hs - as_ >= 1 else "EV"
-        if as_ > hs:
-            return "PK" if as_ - hs >= 1 else "EV"
-        return "EV"
-    return "Unknown"
+def _gc_roster_map(feed: dict) -> dict[int, str]:
+    """Build playerId -> Full Name from typical GameCenter locations."""
+    roster: dict[int, str] = {}
+
+    # 1) rosterSpots (common)
+    for spot in feed.get("rosterSpots") or []:
+        if not isinstance(spot, dict):
+            continue
+        pid = spot.get("playerId")
+        fn, ln = spot.get("firstName"), spot.get("lastName")
+        full = (f"{fn} {ln}".strip() if fn or ln else None)
+        if isinstance(pid, int) and full:
+            roster[pid] = full
+
+    # 2) home/awayTeam 'sroster' or 'roster' arrays
+    for key in ("homeTeam", "awayTeam"):
+        team = feed.get(key)
+        if not isinstance(team, dict):
+            continue
+        for subkey in ("sroster", "roster", "lineup"):
+            arr = team.get(subkey)
+            if not isinstance(arr, list):
+                continue
+            for item in arr:
+                if not isinstance(item, dict):
+                    continue
+                pid = item.get("playerId") or item.get("id")
+                fn = item.get("firstName") or item.get("first_name")
+                ln = item.get("lastName") or item.get("last_name")
+                full = (f"{fn} {ln}".strip() if fn or ln else item.get("playerName"))
+                if isinstance(pid, int) and full:
+                    roster[pid] = full
+
+    return roster
+
+
+def _infer_strength_from_skaters(det: dict, owner_team_id: int | None, home_id: int | None, away_id: int | None) -> str:
+    """Derive 5v5 / PP / PK from skater counts + which team took the shot."""
+    def _to_int(val):
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return None
+
+    hs = _to_int(det.get("homeSkaters"))
+    as_ = _to_int(det.get("awaySkaters"))
+    if hs is None or as_ is None:
+        # Try situationCode like "5v4" / "4x5"
+        sc = (det.get("situationCode") or "").lower()
+        # extract two ints in order
+        nums = []
+        cur = ""
+        for ch in sc:
+            if ch.isdigit():
+                cur += ch
+            elif cur:
+                nums.append(int(cur))
+                cur = ""
+        if cur:
+            nums.append(int(cur))
+        if len(nums) == 2:
+            hs, as_ = nums[0], nums[1]
+
+    if hs is None or as_ is None:
+        return "Unknown"
+
+    if hs == 5 and as_ == 5:
+        return "5v5"
+
+    # Decide PP/PK for the shooting team
+    if owner_team_id and home_id and away_id:
+        owner_is_home = (owner_team_id == home_id)
+        owner_skaters = hs if owner_is_home else as_
+        other_skaters = as_ if owner_is_home else hs
+        if owner_skaters > other_skaters:
+            return "PP"
+        elif owner_skaters < other_skaters:
+            return "PK"
+        else:
+            return "EV"
+
+    # Fallback if we don't know which side is owner
+    if hs > as_:
+        return "PP"
+    if as_ > hs:
+        return "PK"
+    return "EV"
 
 
 def _rows_from_gamecenter(feed: dict) -> list[dict]:
@@ -125,8 +200,11 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
     elif isinstance(plays_root, list):
         extend_from_candidate(plays_root)
 
-    # 2) Build team id->abbrev map
+    # 2) Team maps, roster map
     id_to_abbrev = _gc_team_maps(feed)
+    home_id = (feed.get("homeTeam") or {}).get("id") or (feed.get("teams", {}) or {}).get("home", {}).get("id")
+    away_id = (feed.get("awayTeam") or {}).get("id") or (feed.get("teams", {}) or {}).get("away", {}).get("id")
+    roster = _gc_roster_map(feed)
 
     # 3) Convert to rows
     for p in plays or []:
@@ -139,40 +217,47 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
         if x is None or y is None:
             continue
 
-        # Team abbrev
         team_raw = det.get("eventOwnerTeamAbbrev") or det.get("eventOwnerTeamId")
         if isinstance(team_raw, int):
             team = id_to_abbrev.get(team_raw) or str(team_raw)
+            owner_team_id = team_raw
         else:
             team = team_raw
+            owner_team_id = det.get("eventOwnerTeamId") if isinstance(det.get("eventOwnerTeamId"), int) else None
 
-        # Shooter name fallback strategy
+        # Shooter resolution (multi-stage)
         shooter = det.get("shootingPlayerName") or det.get("scoringPlayerName")
         if not shooter:
-            plist = p.get("players") or []
-            for pl in plist:
-                shooter = pl.get("playerName") or pl.get("fullName")
-                if shooter:
-                    break
+            # (a) explicit role in players[]
+            for pl in (p.get("players") or []):
+                role = (pl.get("typeDescKey") or pl.get("typeCode") or "").lower()
+                if role in {"shooter", "scorer"}:
+                    shooter = pl.get("playerName") or pl.get("fullName")
+                    if not shooter:
+                        fn, ln = pl.get("firstName"), pl.get("lastName")
+                        shooter = f"{fn} {ln}".strip() if (fn or ln) else None
+                    if shooter:
+                        break
         if not shooter:
-            pid = det.get("shootingPlayerId") or det.get("scoringPlayerId")
+            # (b) id match against players[] then roster
+            pid = det.get("shootingPlayerId") or det.get("scoringPlayerId") or det.get("playerId")
             if pid is not None:
-                plist = p.get("players") or []
-                for pl in plist:
+                for pl in (p.get("players") or []):
                     if pl.get("playerId") == pid:
-                        shooter = (
-                            pl.get("playerName")
-                            or (pl.get("firstName") and pl.get("lastName") and f"{pl['firstName']} {pl['lastName']}")
+                        shooter = pl.get("playerName") or pl.get("fullName") or (
+                            f"{pl.get('firstName','').strip()} {pl.get('lastName','').strip()}".strip()
                         )
                         if shooter:
                             break
+                if not shooter:
+                    shooter = roster.get(pid)
         shooter = shooter or "Unknown"
 
         pd_desc = p.get("periodDescriptor") or {}
         period = pd_desc.get("number")
         period_time = p.get("timeInPeriod") or p.get("timeRemaining") or None
 
-        # Strength normalization/derivation
+        # Strength normalization / derivation
         raw_strength = (det.get("strength") or "").lower()
         if raw_strength in {"ev", "even"}:
             strength = "5v5"
@@ -181,9 +266,10 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
         elif raw_strength in {"sh", "penalty kill"}:
             strength = "PK"
         elif raw_strength:
+            # sometimes "4v4", "3v3" etc.
             strength = raw_strength.upper()
         else:
-            strength = _infer_strength_from_skaters(det)
+            strength = _infer_strength_from_skaters(det, owner_team_id, home_id, away_id)
 
         rows.append(
             {
