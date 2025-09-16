@@ -60,13 +60,9 @@ def _rows_from_statsapi(feed: dict) -> list[dict]:
     return rows
 
 
-def _gc_team_maps(feed: dict) -> tuple[dict, dict]:
-    """
-    Build team id/abbrev maps from GameCenter feed.
-    Returns (id->abbrev, abbrev->abbrev) where 2nd is just passthrough helper.
-    """
+def _gc_team_maps(feed: dict) -> dict[int, str]:
+    """Build team id -> abbrev map from GameCenter feed."""
     id_to_abbrev: dict[int, str] = {}
-    # Common GC shapes
     for key in ("homeTeam", "awayTeam"):
         team = feed.get(key)
         if isinstance(team, dict):
@@ -74,7 +70,6 @@ def _gc_team_maps(feed: dict) -> tuple[dict, dict]:
             ab = team.get("abbrev") or team.get("triCode") or team.get("abbreviation")
             if isinstance(tid, int) and isinstance(ab, str):
                 id_to_abbrev[tid] = ab
-    # Sometimes nested under "teams"
     teams = feed.get("teams")
     if isinstance(teams, dict):
         for side in ("home", "away"):
@@ -84,24 +79,20 @@ def _gc_team_maps(feed: dict) -> tuple[dict, dict]:
                 ab = team.get("abbrev") or team.get("triCode") or team.get("abbreviation")
                 if isinstance(tid, int) and isinstance(ab, str):
                     id_to_abbrev[tid] = ab
-    return id_to_abbrev, {}  # second value kept for future extension
+    return id_to_abbrev
 
 
 def _infer_strength_from_skaters(det: dict) -> str:
-    """
-    Derive 5v5/PP/PK from skater counts when explicit strength is missing.
-    """
+    """Derive 5v5/PP/PK from skater counts when explicit strength is missing."""
     hs = det.get("homeSkaters")
     as_ = det.get("awaySkaters")
     if isinstance(hs, int) and isinstance(as_, int):
         if hs == 5 and as_ == 5:
             return "5v5"
-        # if one side < the other, call PP/PK
         if hs > as_:
-            # home has advantage
-            return "PP" if max(hs, as_) >= 5 and hs - as_ >= 1 else "EV"
+            return "PP" if hs - as_ >= 1 else "EV"
         if as_ > hs:
-            return "PK" if max(hs, as_) >= 5 and as_ - hs >= 1 else "EV"
+            return "PK" if as_ - hs >= 1 else "EV"
         return "EV"
     return "Unknown"
 
@@ -109,7 +100,7 @@ def _infer_strength_from_skaters(det: dict) -> str:
 def _rows_from_gamecenter(feed: dict) -> list[dict]:
     rows: list[dict] = []
 
-    # 1) Normalize `plays` into a flat list of play dicts, regardless of shape
+    # 1) Normalize plays to a flat list (handles list/dict/by-period shapes)
     plays_root = feed.get("plays", [])
     plays: list[dict] = []
 
@@ -119,14 +110,11 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
             return
         if isinstance(cand, list):
             if cand and isinstance(cand[0], dict) and "plays" in cand[0]:
-                # [{"plays":[...]}, {"plays":[...]}]  (by-period blocks)
                 for block in cand:
                     plays.extend(block.get("plays") or [])
             else:
-                # direct list of plays
                 plays.extend(cand)
         elif isinstance(cand, dict):
-            # rare: single block with a "plays" key
             plays.extend(cand.get("plays", []))
 
     if isinstance(plays_root, dict):
@@ -136,16 +124,12 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
         extend_from_candidate(plays_root)  # if it already has "plays"
     elif isinstance(plays_root, list):
         extend_from_candidate(plays_root)
-    else:
-        plays = []
 
-    if not isinstance(plays, list):
-        plays = []
+    # 2) Build team id->abbrev map
+    id_to_abbrev = _gc_team_maps(feed)
 
-    id_to_abbrev, _ = _gc_team_maps(feed)
-
-    # 2) Convert GC plays to our rows
-    for p in plays:
+    # 3) Convert to rows
+    for p in plays or []:
         ev_key = (p.get("typeDescKey") or p.get("typeCode") or "").lower()
         if ev_key not in GC_SHOT_EVENTS:
             continue
@@ -155,13 +139,14 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
         if x is None or y is None:
             continue
 
+        # Team abbrev
         team_raw = det.get("eventOwnerTeamAbbrev") or det.get("eventOwnerTeamId")
         if isinstance(team_raw, int):
             team = id_to_abbrev.get(team_raw) or str(team_raw)
         else:
             team = team_raw
 
-        # shooter fallback
+        # Shooter name fallback strategy
         shooter = det.get("shootingPlayerName") or det.get("scoringPlayerName")
         if not shooter:
             plist = p.get("players") or []
@@ -169,13 +154,25 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
                 shooter = pl.get("playerName") or pl.get("fullName")
                 if shooter:
                     break
+        if not shooter:
+            pid = det.get("shootingPlayerId") or det.get("scoringPlayerId")
+            if pid is not None:
+                plist = p.get("players") or []
+                for pl in plist:
+                    if pl.get("playerId") == pid:
+                        shooter = (
+                            pl.get("playerName")
+                            or (pl.get("firstName") and pl.get("lastName") and f"{pl['firstName']} {pl['lastName']}")
+                        )
+                        if shooter:
+                            break
         shooter = shooter or "Unknown"
 
         pd_desc = p.get("periodDescriptor") or {}
         period = pd_desc.get("number")
         period_time = p.get("timeInPeriod") or p.get("timeRemaining") or None
 
-        # strength fallback
+        # Strength normalization/derivation
         raw_strength = (det.get("strength") or "").lower()
         if raw_strength in {"ev", "even"}:
             strength = "5v5"
@@ -193,11 +190,7 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
                 "gamePk": feed.get("id") or feed.get("gameId"),
                 "period": period,
                 "periodTime": period_time,
-                "event": (
-                    "Goal"
-                    if ev_key == "goal"
-                    else ("Shot" if ev_key == "shot-on-goal" else "Missed Shot")
-                ),
+                "event": ("Goal" if ev_key == "goal" else ("Shot" if ev_key == "shot-on-goal" else "Missed Shot")),
                 "team": team,
                 "player": shooter,
                 "x": float(x),
@@ -227,13 +220,10 @@ def _shots_from_feed(feed: dict) -> pd.DataFrame:
 # ---------- Exact-date schedule (StatsAPI preferred) ----------
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_game_pks_for_date(d: _date) -> list[int]:
-    """
-    Return game PKs for the *exact* date `d`.
-    Prefer StatsAPI (exact date), fallback to site schedule filtered by start date.
-    """
+    """Return game PKs for exact date `d` (StatsAPI first; site API fallback filtered)."""
     wanted = d.isoformat()
 
-    # Preferred: StatsAPI schedule for the exact date
+    # Preferred: StatsAPI schedule
     try:
         url = f"{STATS_BASE}/schedule?date={wanted}"
         with httpx.Client(timeout=20.0, headers={"User-Agent": "SparkerData-HockeyShotMap/1.0"}, trust_env=True) as c:
@@ -251,7 +241,7 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
     except Exception:
         pass
 
-    # Fallback: site schedule (sometimes returns a week) -> filter to wanted date
+    # Fallback: site schedule (may include a week) -> filter to day
     try:
         url = f"{SITE_BASE}/schedule/{wanted}"
         with httpx.Client(timeout=20.0, headers={"User-Agent": "SparkerData-HockeyShotMap/1.0"}, trust_env=True) as c:
@@ -395,7 +385,7 @@ with left:
 parser_label = None
 games_count = 0
 
-# Do not auto-load demo when user explicitly fetches. Demo only shown if nothing has been fetched yet.
+# No demo mixing after user fetch; demo only before any fetch
 if "data_df" not in st.session_state:
     st.session_state["data_df"] = None
     st.session_state["data_dates"] = None
@@ -424,7 +414,6 @@ else:
     df = st.session_state.get("data_df")
     games_count = st.session_state.get("games_count", 0)
     if df is None:
-        # initial load only: show demo until the user presses "Retrieve Data"
         df = pd.read_csv("data/curated/demo_shots.csv")
 
 # ---------- Summary ----------
