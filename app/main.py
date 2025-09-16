@@ -669,10 +669,11 @@ with right:
             orientation="h",
             yanchor="bottom", y=1.02,
             xanchor="right", x=1,
-            font=dict(color="black")  # <-- NEW: legend text color
+            font=dict(color="black"),   # <- legend text black
+            bgcolor="rgba(0,0,0,0)",    # <- transparent background (prevents boxy look)
+            borderwidth=0
         ),
-    ),
-
+    )
 
     if not filtered.empty:
         # Colors & hover text (robust to missing 'team'/'strength')
