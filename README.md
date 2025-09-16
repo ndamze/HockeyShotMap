@@ -14,23 +14,6 @@ Context-aware hockey shot maps and player pages – with optional **live(ish)** 
 
 ---
 
-## Demo
-
-> Add a GIF or screenshot here for instant credibility.
-
-```
-assets/
-├─ screenshot.png
-└─ demo.gif
-```
-
-In the README:
-```markdown
-![Demo](assets/screenshot.png)
-```
-
----
-
 ## Quick start
 
 ```bash
