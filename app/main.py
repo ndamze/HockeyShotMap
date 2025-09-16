@@ -1,13 +1,14 @@
 import pandas as pd
 import httpx
 import streamlit as st
-from datetime import date as _date
+from datetime import date as _date, timedelta
+from io import StringIO
 
 # ---- Rink plot import with dual-path fallback ----
 try:
-    from app.components.rink_plot import base_rink, add_shots  # when repo root on PYTHONPATH
+    from app.components.rink_plot import base_rink, add_shots
 except ModuleNotFoundError:
-    from components.rink_plot import base_rink, add_shots       # when running inside app/
+    from components.rink_plot import base_rink, add_shots
 
 st.set_page_config(page_title="Hockey Shot Maps", layout="wide")
 st.title("Hockey Shot Heatmaps")
@@ -55,7 +56,7 @@ def _rows_from_statsapi(feed: dict) -> list[dict]:
                 "strength": strength,
                 "is_goal": 1 if ev == "Goal" else 0,
             }
-        )  # <-- closes dict + append
+        )
     return rows
 
 
@@ -69,7 +70,6 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
         or []
     )
 
-    # Some responses group plays by period
     if isinstance(plays, list) and plays and isinstance(plays[0], dict) and "plays" in plays[0]:
         grouped = []
         for block in plays:
@@ -123,7 +123,7 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
                 "strength": strength,
                 "is_goal": 1 if ev_key == "goal" else 0,
             }
-        )  # <-- closes dict + append
+        )
     return rows
 
 
@@ -135,18 +135,7 @@ def _shots_from_feed(feed: dict) -> pd.DataFrame:
         source = "GameCenter"
     df = pd.DataFrame(
         rows,
-        columns=[
-            "gamePk",
-            "period",
-            "periodTime",
-            "event",
-            "team",
-            "player",
-            "x",
-            "y",
-            "strength",
-            "is_goal",
-        ],
+        columns=["gamePk", "period", "periodTime", "event", "team", "player", "x", "y", "strength", "is_goal"],
     )
     df.attrs["parser_source"] = source
     return df
@@ -177,20 +166,21 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str]:
+def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
+    """Return (shots_df, source_label, games_count) for a given date."""
     try:
         pks = fetch_game_pks_for_date(d)
     except Exception as e:
-        return pd.DataFrame(), f"schedule error: {e}"
+        return pd.DataFrame(), f"schedule error: {e}", 0
 
+    games_count = len(pks)
     if not pks:
-        return pd.DataFrame(), "no games"
+        return pd.DataFrame(), "no games", 0
 
-    all_frames: list[pd.DataFrame] = []
-    used_sources: set[str] = set()
+    frames = []
+    used_sources = set()
     with httpx.Client(timeout=20.0, headers={"User-Agent": "SparkerData-HockeyShotMap/1.0"}, trust_env=True) as c:
         for pk in pks:
-            # Try StatsAPI first, fallback to GameCenter
             feed = None
             try:
                 r = c.get(f"{STATS_BASE}/game/{pk}/feed/live")
@@ -203,77 +193,155 @@ def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str]:
                     feed = r.json()
                 except Exception:
                     feed = None
-
             if not feed:
                 continue
-
             df = _shots_from_feed(feed)
             if not df.empty:
-                all_frames.append(df)
+                frames.append(df)
                 used_sources.add(df.attrs.get("parser_source", "Unknown"))
 
-    if not all_frames:
-        return pd.DataFrame(), "no shots"
+    if not frames:
+        return pd.DataFrame(), "no shots", games_count
 
-    shots = pd.concat(all_frames, ignore_index=True)
+    shots = pd.concat(frames, ignore_index=True)
     label = "/".join(sorted(used_sources)) if used_sources else "Unknown"
-    return shots, label
+    return shots, label, games_count
 
 
-# ---------- Sidebar: source & filters ----------
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_shots_between(start: _date, end: _date) -> tuple[pd.DataFrame, str, int]:
+    """Fetch and combine shots for an inclusive date range."""
+    all_frames = []
+    used = set()
+    games_total = 0
+    day = start
+    while day <= end:
+        df, label, games_count = fetch_shots_for_date(day)
+        games_total += games_count
+        if not df.empty:
+            all_frames.append(df.assign(source_date=str(day)))
+            used.update((label or "Unknown").split("/"))
+        day += timedelta(days=1)
+    if not all_frames:
+        return pd.DataFrame(), "no data", games_total
+    out = pd.concat(all_frames, ignore_index=True)
+    return out, "/".join(sorted(s for s in used if s and s not in {"no games", "no shots"})), games_total
+
+
+# ---------- Sidebar: date / range + filters ----------
 left, right = st.columns([1, 3])
 
 with left:
-    st.subheader("Data source")
-    live_mode = st.toggle("Live mode (NHL)", value=False)
-    picked = st.date_input(
-        "Date",
-        value=_date.today(),
-        max_value=_date.today(),
-        help="Select day to fetch games",
-    )
-    fetch_btn = st.button("Fetch live shots for date") if live_mode else None
+    st.subheader("Date selection")
 
-# Load data (live or demo)
-parser_source = None
-if live_mode and (
-    fetch_btn
-    or "live_cached_df" not in st.session_state
-    or st.session_state.get("live_date") != picked
-):
-    with st.spinner("Fetching live data..."):
-        df_live, source = fetch_shots_for_date(picked)
+    # Quick presets
+    col_p1, col_p2, col_p3 = st.columns(3)
+    with col_p1:
+        if st.button("Today"):
+            st.session_state["_preset"] = ("single", _date.today(), _date.today())
+    with col_p2:
+        if st.button("Yesterday"):
+            y = _date.today() - timedelta(days=1)
+            st.session_state["_preset"] = ("single", y, y)
+    with col_p3:
+        if st.button("Last 7 days"):
+            end = _date.today()
+            start = end - timedelta(days=6)
+            st.session_state["_preset"] = ("range", start, end)
+
+    mode = st.radio("Mode", ["Single day", "Date range"], horizontal=True)
+
+    if " _preset" in st.session_state:
+        preset = st.session_state.pop("_preset")
+    else:
+        preset = None
+
+    if mode == "Single day":
+        default = preset[1] if preset and preset[0] == "single" else _date.today()
+        picked = st.date_input("Date", value=default, max_value=_date.today())
+        fetch = st.button("Fetch day")
+    else:
+        if preset and preset[0] == "range":
+            default_start, default_end = preset[1], preset[2]
+        else:
+            default_start, default_end = _date.today(), _date.today()
+        picked_range = st.date_input("Date range", value=(default_start, default_end), max_value=_date.today())
+        if isinstance(picked_range, tuple) and len(picked_range) == 2:
+            start_date, end_date = picked_range
+        else:
+            start_date, end_date = _date.today(), _date.today()
+        fetch = st.button("Fetch range")
+
+# ---------- Load data ----------
+parser_label = None
+games_count = 0
+
+if "data_df" not in st.session_state:
+    st.session_state["data_df"] = None
+    st.session_state["data_dates"] = None
+    st.session_state["games_count"] = 0
+
+if fetch:
+    with st.spinner("Fetching NHL data..."):
+        if mode == "Single day":
+            df_live, parser_label, games_count = fetch_shots_for_date(picked)
+        else:
+            df_live, parser_label, games_count = fetch_shots_between(start_date, end_date)
+
         if df_live.empty:
-            st.warning(f"No live shots for {picked} ({source}). Showing demo data instead.")
+            st.warning("No shots for the selected date(s). Falling back to demo data.")
             df = pd.read_csv("data/curated/demo_shots.csv")
+            st.session_state["data_df"] = df
+            st.session_state["data_dates"] = None
+            st.session_state["games_count"] = 0
+            parser_label = None
         else:
             df = df_live
-            parser_source = source
-            st.session_state["live_cached_df"] = df
-            st.session_state["live_date"] = picked
+            st.session_state["data_df"] = df
+            st.session_state["data_dates"] = (picked if mode == "Single day" else (start_date, end_date))
+            st.session_state["games_count"] = games_count
 else:
-    if live_mode and st.session_state.get("live_cached_df") is not None and st.session_state.get("live_date") == picked:
-        df = st.session_state["live_cached_df"]
-        parser_source = df.attrs.get("parser_source") or parser_source
-    else:
+    df = st.session_state.get("data_df")
+    games_count = st.session_state.get("games_count", 0)
+    if df is None:
         df = pd.read_csv("data/curated/demo_shots.csv")
 
-# Parser info (if any)
-if parser_source:
-    st.sidebar.info(f"Data parsed using **{parser_source}**")
+# ---------- Summary ----------
+with left:
+    st.subheader("Summary")
+    total_shots = int(df.shape[0]) if not df.empty else 0
+    total_goals = int(df["is_goal"].sum()) if "is_goal" in df else 0
+    uniq_players = df["player"].nunique() if "player" in df else 0
+    uniq_teams = df["team"].nunique() if "team" in df else 0
+    st.metric("Games", games_count)
+    st.metric("Shots", total_shots)
+    st.metric("Goals", total_goals)
+    st.metric("Players w/ shots", uniq_players)
+    st.metric("Teams", uniq_teams)
+    if parser_label:
+        st.caption(f"Parsed via: {parser_label}")
 
 # ---------- Filters ----------
 with left:
-    player = st.selectbox("Player", options=["All"] + sorted(df["player"].dropna().unique().tolist()))
-    strength = st.selectbox("Game state", options=["All"] + sorted(df["strength"].dropna().unique().tolist()))
+    # Player options from data (shooters in selected date(s) or demo)
+    player_opts = ["All"] + (sorted(df["player"].dropna().unique().tolist()) if "player" in df else [])
+    # Team multiselect
+    team_opts = sorted([t for t in df["team"].dropna().unique().tolist()]) if "team" in df else []
+    selected_player = st.selectbox("Player", options=player_opts)
+    selected_teams = st.multiselect("Teams", options=team_opts, default=team_opts)
+    strength_opts = ["All"] + (sorted(df["strength"].dropna().unique().tolist()) if "strength" in df else [])
+    selected_strength = st.selectbox("Game state", options=strength_opts)
     goals_only = st.checkbox("Show only goals", value=False)
 
+# Apply filters
 mask = pd.Series(True, index=df.index)
-if player != "All":
-    mask &= df["player"] == player
-if strength != "All":
-    mask &= df["strength"] == strength
-if goals_only:
+if selected_player != "All" and "player" in df:
+    mask &= df["player"] == selected_player
+if selected_teams and "team" in df:
+    mask &= df["team"].isin(selected_teams)
+if selected_strength != "All" and "strength" in df:
+    mask &= df["strength"] == selected_strength
+if goals_only and "is_goal" in df:
     mask &= df["is_goal"] == 1
 
 filtered = df[mask].copy()
@@ -284,4 +352,45 @@ with right:
     fig = add_shots(fig, filtered)
     st.plotly_chart(fig, use_container_width=True)
 
-st.caption(f"Rows: {len(filtered)} | Source: {'LIVE' if live_mode and parser_source else 'DEMO'}")
+# ---------- Export ----------
+with left:
+    st.subheader("Export")
+    if not filtered.empty:
+        csv_buf = StringIO()
+        filtered.to_csv(csv_buf, index=False)
+        st.download_button(
+            "Download filtered shots CSV",
+            data=csv_buf.getvalue(),
+            file_name="shots_filtered.csv",
+            mime="text/csv",
+        )
+    else:
+        st.caption("No filtered rows to export.")
+
+# ---------- Optional: summarized table for ranges ----------
+if not filtered.empty and isinstance(st.session_state.get("data_dates"), tuple):
+    st.subheader("Player summary (selected range)")
+    summary = (
+        filtered.groupby(["player", "team", "strength"], dropna=False)
+        .agg(shots=("player", "size"), goals=("is_goal", "sum"))
+        .reset_index()
+        .sort_values(["shots", "goals"], ascending=[False, False])
+    )
+    st.dataframe(summary, use_container_width=True)
+
+    # export summary CSV
+    sum_buf = StringIO()
+    summary.to_csv(sum_buf, index=False)
+    st.download_button(
+        "Download range summary CSV",
+        data=sum_buf.getvalue(),
+        file_name="range_summary.csv",
+        mime="text/csv",
+    )
+
+st.caption(
+    "Source: NHL Stats/GameCenter APIs • "
+    f"Rows: {len(filtered)} • "
+    f"Teams: {len(selected_teams) if selected_teams else 0} • "
+    f"Filters: player={selected_player}, strength={selected_strength}, goals_only={goals_only}"
+)
