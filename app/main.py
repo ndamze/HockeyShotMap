@@ -365,48 +365,72 @@ def _empty_df() -> pd.DataFrame:
         df[c] = pd.Series(dtype="int")
     return df
 
-# ---------- Exact-date schedule (StatsAPI preferred) ----------
+# ---------- Exact-date schedule (robust) ----------
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_game_pks_for_date(d: _date) -> list[int]:
     wanted = d.isoformat()
+    headers = {"User-Agent": "SparkerData-HockeyShotMap/1.0"}
 
-    # Preferred: StatsAPI
+    def _pks_from_stats_json(data: dict) -> list[int]:
+        pks = []
+        for day in data.get("dates", []) or []:
+            for g in day.get("games", []) or []:
+                pk = g.get("gamePk")
+                gdate = (g.get("gameDate") or "")[:10]
+                if pk and gdate == wanted:
+                    pks.append(int(pk))
+        return pks
+
+    # Preferred: StatsAPI ?date=
     try:
         url = f"{STATS_BASE}/schedule?date={wanted}"
-        with httpx.Client(timeout=20.0, headers={"User-Agent": "SparkerData-HockeyShotMap/1.0"}, trust_env=True) as c:
+        with httpx.Client(timeout=20.0, headers=headers, trust_env=True) as c:
             r = c.get(url); r.raise_for_status()
-            data = r.json()
-        pks = [int(g["gamePk"]) for day in data.get("dates", []) for g in day.get("games", []) if g.get("gamePk")]
+            pks = _pks_from_stats_json(r.json())
         if pks:
             return sorted(set(pks))
     except Exception:
         pass
 
-    # Fallback: site schedule (filter to the day)
+    # Fallback: StatsAPI startDate/endDate
+    try:
+        url = f"{STATS_BASE}/schedule?startDate={wanted}&endDate={wanted}"
+        with httpx.Client(timeout=20.0, headers=headers, trust_env=True) as c:
+            r = c.get(url); r.raise_for_status()
+            pks = _pks_from_stats_json(r.json())
+        if pks:
+            return sorted(set(pks))
+    except Exception:
+        pass
+
+    # GameCenter schedule fallback
     try:
         url = f"{SITE_BASE}/schedule/{wanted}"
-        with httpx.Client(timeout=20.0, headers={"User-Agent": "SparkerData-HockeyShotMap/1.0"}, trust_env=True) as c:
+        with httpx.Client(timeout=20.0, headers=headers, trust_env=True) as c:
             r = c.get(url); r.raise_for_status()
             sched = r.json()
-        games_iter = []
-        if isinstance(sched.get("gameWeek"), list):
-            for wk in sched["gameWeek"]:
-                games_iter.extend(wk.get("games", []))
-        elif isinstance(sched.get("games"), list):
-            games_iter = sched["games"]
 
-        def date_of(game: dict) -> str | None:
-            for key in ("startTimeUTC", "startTime", "gameDate", "startTimeLocal"):
+        def _game_iter(s):
+            if isinstance(s.get("gameWeek"), list):
+                for wk in s["gameWeek"]:
+                    for g in wk.get("games", []) or []:
+                        yield g
+            for g in s.get("games", []) or []:
+                yield g
+
+        def _date_of(game: dict) -> str | None:
+            for key in ("gameDate", "startTimeUTC", "startTime", "startTimeLocal"):
                 v = game.get(key)
                 if isinstance(v, str) and len(v) >= 10:
                     return v[:10]
             return None
 
         pks = []
-        for g in games_iter:
-            if date_of(g) == wanted:
+        for g in _game_iter(sched):
+            if _date_of(g) == wanted:
                 pk = g.get("id") or g.get("gamePk") or g.get("gameId")
-                if pk: pks.append(int(pk))
+                if pk:
+                    pks.append(int(pk))
         return sorted(set(pks))
     except Exception:
         return []
@@ -480,7 +504,6 @@ def fetch_shots_between(start: _date, end: _date) -> tuple[pd.DataFrame, str, in
     if not all_frames:
         return _empty_df(), "no data", games_total
     out = pd.concat(all_frames, ignore_index=True)
-    # keep consistent columns
     if "source_date" not in out.columns:
         out["source_date"] = pd.NA
     return out[REQUIRED_COLS + ["source_date"]], "/".join(sorted(s for s in used if s and s not in {"no games", "no shots"})), games_total
@@ -512,10 +535,10 @@ with left:
     mode = st.radio("Mode", ["Single day", "Date range"], horizontal=True)
     preset = st.session_state.pop("_preset", None)
 
-    # --- Cache buster ---
-if st.button("Force refresh (clear cache)"):
-    st.cache_data.clear()
-    st.experimental_rerun()
+    # --- Cache buster (correct placement) ---
+    if st.button("Force refresh (clear cache)"):
+        st.cache_data.clear()
+        st.experimental_rerun()
 
     if mode == "Single day":
         default = preset[1] if preset and preset[0] == "single" else _date.today()
@@ -678,7 +701,7 @@ with right:
             bgcolor="rgba(0,0,0,0)",
             borderwidth=0
         ),
-        hoverlabel=dict(font=dict(color="white")),
+        hoverlabel=dict(font=dict(color="white"), bgcolor="rgba(0,0,0,0.7)"),
     )
 
     if not filtered.empty:
@@ -767,10 +790,9 @@ if not filtered.empty and isinstance(st.session_state.get("data_dates"), tuple):
     )
     st.dataframe(summary, use_container_width=True, height=260)
 
+# Compact footer caption
 st.caption(
-    "Source: NHL Stats/GameCenter APIs • "
     f"Rows: {len(filtered)} • "
-    f"Filters: players="
-    f"{'All' if not (st.session_state.get('data_df') is not None and 'player' in df) else 'custom'}, "
-    f"goals_only={st.session_state.get('goals_only', False) if 'goals_only' in st.session_state else 'False'}"
+    f"Filters → players: {'custom' if selected_players else 'All'}, "
+    f"goals_only: {bool(goals_only)}"
 )
