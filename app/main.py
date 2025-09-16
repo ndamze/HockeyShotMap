@@ -540,7 +540,7 @@ with left:
     # --- Cache buster (correct placement) ---
     if st.button("Force refresh (clear cache)"):
         st.cache_data.clear()
-        st.experimental_rerun()
+        st.rerun()
 
     if mode == "Single day":
         default = preset[1] if preset and preset[0] == "single" else _date.today()
