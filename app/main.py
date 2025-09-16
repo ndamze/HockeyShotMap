@@ -6,7 +6,7 @@ from io import StringIO
 
 # ---- Rink plot import with dual-path fallback ----
 try:
-    from app.components.rink_plot import base_rink  # we'll add our own scatter layer
+    from app.components.rink_plot import base_rink  # we'll add our own scatter layers
 except ModuleNotFoundError:
     from components.rink_plot import base_rink
 
@@ -33,15 +33,13 @@ TEAM_COLORS = {
 # =========================
 
 def _norm_name_value(v) -> str | None:
-    """Extract a clean string from possibly nested/dict name fields."""
     if isinstance(v, str):
         s = v.strip()
         return s if s else None
     if isinstance(v, dict):
-        for k in ("default", "en", "English", "EN", "first", "last"):  # common GC patterns
+        for k in ("default", "en", "English", "EN", "first", "last"):
             if k in v and isinstance(v[k], str) and v[k].strip():
                 return v[k].strip()
-        # last resort: join all string values
         parts = [str(x).strip() for x in v.values() if isinstance(x, str) and x.strip()]
         return " ".join(parts) if parts else None
     return None
@@ -64,7 +62,7 @@ def _normalize_strength_label(label: str | None) -> str:
     }
     if l in mapping:
         return mapping[l]
-    # Formats like "4-on-4" or "3v3"
+    # e.g., "4-on-4", "4v4", "3v3"
     l = l.replace("on", "v").replace("-", "").replace(" ", "")
     return l.upper()
 
@@ -92,8 +90,7 @@ def _rows_from_statsapi(feed: dict) -> list[dict]:
         team = team_obj.get("triCode") or team_obj.get("name")
 
         shooter = None
-        players = p.get("players") or []
-        for pl in players:
+        for pl in (p.get("players") or []):
             if pl.get("playerType") in ("Shooter", "Scorer"):
                 shooter = (pl.get("player") or {}).get("fullName")
                 break
@@ -132,7 +129,6 @@ def _matchup_from_statsapi(feed: dict) -> str | None:
 GC_SHOT_EVENTS = {"shot-on-goal", "missed-shot", "goal"}
 
 def _gc_team_maps(feed: dict) -> tuple[dict[int, str], int | None, int | None]:
-    """id->abbrev, home_id, away_id"""
     id_to_abbrev: dict[int, str] = {}
     home_id = None
     away_id = None
@@ -162,7 +158,6 @@ def _gc_team_maps(feed: dict) -> tuple[dict[int, str], int | None, int | None]:
     return id_to_abbrev, home_id, away_id
 
 def _gc_roster_map(feed: dict) -> dict[int, str]:
-    """playerId -> Full Name (best effort)"""
     roster: dict[int, str] = {}
     for spot in feed.get("rosterSpots") or []:
         if not isinstance(spot, dict):
@@ -264,7 +259,6 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
         if x is None or y is None:
             continue
 
-        # team abbrev & owner id
         team_raw = det.get("eventOwnerTeamAbbrev") or det.get("eventOwnerTeamId")
         if isinstance(team_raw, int):
             team = id_to_abbrev.get(team_raw) or str(team_raw)
@@ -273,7 +267,6 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
             team = team_raw
             owner_team_id = det.get("eventOwnerTeamId") if isinstance(det.get("eventOwnerTeamId"), int) else None
 
-        # shooter resolution
         shooter = (_norm_name_value(det.get("shootingPlayerName")) or
                    _norm_name_value(det.get("scoringPlayerName")))
         if not shooter:
@@ -295,12 +288,10 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
                     shooter = roster.get(pid)
         shooter = shooter or "Unknown"
 
-        # period/time
         pd_desc = p.get("periodDescriptor") or {}
         period = pd_desc.get("number")
         period_time = p.get("timeInPeriod") or p.get("timeRemaining") or None
 
-        # strength
         raw_strength = _norm_name_value(det.get("strength"))
         if raw_strength:
             strength = _normalize_strength_label(raw_strength)
@@ -341,7 +332,6 @@ def _matchup_from_gamecenter(feed: dict) -> str | None:
 # =========================
 
 def _shots_from_feed(feed: dict) -> tuple[pd.DataFrame, str, str | None]:
-    """Return df, source_label, matchup."""
     rows = _rows_from_statsapi(feed)
     matchup = None
     source = "StatsAPI"
@@ -362,7 +352,6 @@ def _shots_from_feed(feed: dict) -> tuple[pd.DataFrame, str, str | None]:
 # ---------- Exact-date schedule (StatsAPI preferred) ----------
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_game_pks_for_date(d: _date) -> list[int]:
-    """Return game PKs for exact date `d` (StatsAPI first; site API fallback filtered)."""
     wanted = d.isoformat()
 
     # Preferred: StatsAPI
@@ -409,7 +398,6 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
 # ---------- Fetch shots (day / range), add matchup, de-dupe & clean ----------
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
-    """Return (shots_df, parser_label(s), games_count) for a given date."""
     pks = fetch_game_pks_for_date(d)
     games_count = len(pks)
     if not pks:
@@ -458,7 +446,6 @@ def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_shots_between(start: _date, end: _date) -> tuple[pd.DataFrame, str, int]:
-    """Fetch and combine shots for an inclusive date range."""
     all_frames = []
     used = set()
     games_total = 0
@@ -553,25 +540,38 @@ else:
         if "matchup" not in df.columns:
             df["matchup"] = None
 
-# Summary
+# ---------- Compact Summary (single row) ----------
 with left:
     st.subheader("Summary")
+    c1, c2, c3, c4, c5 = st.columns(5)
     total_shots = int(df.shape[0]) if not df.empty else 0
     total_goals = int(df["is_goal"].sum()) if "is_goal" in df else 0
     uniq_players = df["player"].nunique() if "player" in df else 0
     uniq_teams = df["team"].nunique() if "team" in df else 0
-    st.metric("Games", games_count)
-    st.metric("Shots", total_shots)
-    st.metric("Goals", total_goals)
-    st.metric("Players w/ shots", uniq_players)
-    st.metric("Teams", uniq_teams)
+    c1.metric("Games", games_count)
+    c2.metric("Shots", total_shots)
+    c3.metric("Goals", total_goals)
+    c4.metric("Players", uniq_players)
+    c5.metric("Teams", uniq_teams)
     if parser_label:
         st.caption(f"Parsed via: {parser_label}")
 
-# Filters
+# ---------- Filters ----------
 with left:
-    player_opts = ["All"] + (sorted([p for p in df["player"].dropna().unique().tolist() if p and p != "Unknown"]) if "player" in df else [])
-    selected_player = st.selectbox("Player", options=player_opts)
+    # Player filter grouped by team in label (TEAM — Player)
+    if "player" in df and "team" in df:
+        players = df[["player", "team"]].dropna().drop_duplicates().sort_values(["team", "player"])
+        label_to_player = {f"{row.team} — {row.player}": row.player for row in players.itertuples(index=False)}
+        player_opts = ["All"] + list(label_to_player.keys())
+    else:
+        label_to_player = {}
+        player_opts = ["All"]
+
+    selected_player_label = st.selectbox("Player", options=player_opts)
+    if selected_player_label == "All":
+        selected_player = "All"
+    else:
+        selected_player = label_to_player.get(selected_player_label, "All")
 
     # Matchup filter only in single-day mode
     matchup_opts = []
@@ -579,9 +579,6 @@ with left:
         if "matchup" in df and not df["matchup"].dropna().empty:
             matchup_opts = sorted(df["matchup"].dropna().unique().tolist())
     selected_matchups = st.multiselect("Matchup (AWAY @ HOME)", options=matchup_opts, default=matchup_opts)
-
-    strength_opts = ["All"] + (sorted([s for s in df["strength"].dropna().unique().tolist() if s]) if "strength" in df else [])
-    selected_strength = st.selectbox("Game state", options=strength_opts)
 
     goals_only = st.checkbox("Show only goals", value=False)
 
@@ -591,8 +588,6 @@ if selected_player != "All" and "player" in df:
     mask &= df["player"] == selected_player
 if selected_matchups and "matchup" in df:
     mask &= df["matchup"].isin(selected_matchups)
-if selected_strength != "All" and "strength" in df:
-    mask &= df["strength"] == selected_strength
 if goals_only and "is_goal" in df:
     mask &= df["is_goal"] == 1
 
@@ -604,32 +599,58 @@ with right:
 
     fig = base_rink()
 
+    # White ice & tidy layout
+    fig.update_layout(
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        margin=dict(l=10, r=10, t=20, b=10),
+        height=520,  # keeps the whole tool visible without scrolling (content area)
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+
     if not filtered.empty:
-        # Colors & hover text
-        colors = [TEAM_COLORS.get(t, "#888888") for t in filtered["team"]]
-        hover_texts = filtered.apply(lambda r: f"{r['player']} ({r['team']})", axis=1).tolist()
+        # Colors
+        colors_shots = [TEAM_COLORS.get(t, "#888888") for t in filtered["team"]]
 
-        # Separate goals vs non-goals for nicer layering
-        fg = filtered[filtered["is_goal"] == 1]
-        fs = filtered[filtered["is_goal"] != 1]
+        # Hover: Player (TEAM) — STRENGTH only for goals
+        def _hover_row(r):
+            base = f"{r['player']} ({r['team']})"
+            if r.get("is_goal", 0) == 1 and isinstance(r.get("strength"), str) and r["strength"] != "Unknown":
+                return f"{base} — {r['strength']}"
+            return base
 
-        if not fs.empty:
+        texts = filtered.apply(_hover_row, axis=1).tolist()
+
+        # Layer: non-goals under, goals over (star), black outline for visibility on white
+        non_goals = filtered[filtered["is_goal"] != 1]
+        goals = filtered[filtered["is_goal"] == 1]
+
+        if not non_goals.empty:
             fig.add_trace(go.Scatter(
-                x=fs["x"], y=fs["y"],
+                x=non_goals["x"], y=non_goals["y"],
                 mode="markers",
-                marker=dict(color=[TEAM_COLORS.get(t, "#888888") for t in fs["team"]], size=7, opacity=0.75),
-                text=[f"{p} ({t})" for p, t in zip(fs["player"], fs["team"])],
+                marker=dict(
+                    color=[TEAM_COLORS.get(t, "#888888") for t in non_goals["team"]],
+                    size=7, opacity=0.8,
+                    line=dict(color="black", width=0.8),
+                ),
+                text=[_hover_row(r) for _, r in non_goals.iterrows()],
                 hovertemplate="%{text}",
-                name="Shots"
+                name="Shots",
             ))
-        if not fg.empty:
+
+        if not goals.empty:
             fig.add_trace(go.Scatter(
-                x=fg["x"], y=fg["y"],
+                x=goals["x"], y=goals["y"],
                 mode="markers",
-                marker=dict(color=[TEAM_COLORS.get(t, "#888888") for t in fg["team"]], size=9, opacity=0.9, symbol="star"),
-                text=[f"{p} ({t})" for p, t in zip(fg["player"], fg["team"])],
+                marker=dict(
+                    color=[TEAM_COLORS.get(t, "#888888") for t in goals["team"]],
+                    size=9, opacity=0.95, symbol="star",
+                    line=dict(color="black", width=1.0),
+                ),
+                text=[_hover_row(r) for _, r in goals.iterrows()],
                 hovertemplate="%{text}",
-                name="Goals"
+                name="Goals",
             ))
 
         st.plotly_chart(fig, use_container_width=True)
@@ -651,29 +672,19 @@ with left:
     else:
         st.caption("No filtered rows to export.")
 
-# ---------- Optional: summarized table for ranges ----------
+# ---------- Optional: summarized table for ranges (still compact) ----------
 if not filtered.empty and isinstance(st.session_state.get("data_dates"), tuple):
     st.subheader("Player summary (selected range)")
     summary = (
-        filtered.groupby(["player", "team", "strength"], dropna=False)
+        filtered.groupby(["player", "team"], dropna=False)
         .agg(shots=("player", "size"), goals=("is_goal", "sum"))
         .reset_index()
         .sort_values(["shots", "goals"], ascending=[False, False])
     )
-    st.dataframe(summary, use_container_width=True)
-
-    # export summary CSV
-    sum_buf = StringIO()
-    summary.to_csv(sum_buf, index=False)
-    st.download_button(
-        "Download range summary CSV",
-        data=sum_buf.getvalue(),
-        file_name="range_summary.csv",
-        mime="text/csv",
-    )
+    st.dataframe(summary, use_container_width=True, height=260)
 
 st.caption(
     "Source: NHL Stats/GameCenter APIs • "
     f"Rows: {len(filtered)} • "
-    f"Filters: player={selected_player}, strength={selected_strength}, goals_only={goals_only}"
+    f"Filters: player={selected_player}, goals_only={goals_only}"
 )
