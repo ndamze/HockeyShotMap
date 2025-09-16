@@ -73,29 +73,26 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
             return
         if isinstance(cand, list):
             if cand and isinstance(cand[0], dict) and "plays" in cand[0]:
-                # shape: [{"plays": [...]}, {"plays": [...]}, ...]  (by-period blocks)
+                # [{"plays":[...]}, {"plays":[...]}]  (by-period blocks)
                 for block in cand:
                     plays.extend(block.get("plays") or [])
             else:
-                # shape: direct list of plays
+                # direct list of plays
                 plays.extend(cand)
         elif isinstance(cand, dict):
             # rare: single block with a "plays" key
             plays.extend(cand.get("plays", []))
 
     if isinstance(plays_root, dict):
-        # common GC shapes
         extend_from_candidate(plays_root.get("all"))
         extend_from_candidate(plays_root.get("byPeriod"))
         extend_from_candidate(plays_root.get("currentPlay"))
-        # in case it already has a "plays" list at the top level
-        extend_from_candidate(plays_root)
+        extend_from_candidate(plays_root)  # if it already has "plays"
     elif isinstance(plays_root, list):
         extend_from_candidate(plays_root)
     else:
         plays = []
 
-    # guard
     if not isinstance(plays, list):
         plays = []
 
@@ -111,26 +108,17 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
             continue
 
         team = det.get("eventOwnerTeamAbbrev") or det.get("eventOwnerTeamId") or None
-        # inside the loop over plays in _rows_from_gamecenter(...)
-        det = p.get("details") or {}
-        x, y = det.get("xCoord"), det.get("yCoord")
-        if x is None or y is None:
-            continue
-
-        team = det.get("eventOwnerTeamAbbrev") or det.get("eventOwnerTeamId") or None
 
         # --- improved shooter name fallback ---
         shooter = det.get("shootingPlayerName") or det.get("scoringPlayerName")
         if not shooter:
             plist = p.get("players") or []
             for pl in plist:
-                # fields vary; try common ones
                 shooter = pl.get("playerName") or pl.get("fullName")
                 if shooter:
                     break
-shooter = shooter or "Unknown"
-# --- end fallback ---
-
+        shooter = shooter or "Unknown"
+        # --- end fallback ---
 
         pd_desc = p.get("periodDescriptor") or {}
         period = pd_desc.get("number")
@@ -152,8 +140,7 @@ shooter = shooter or "Unknown"
                 "period": period,
                 "periodTime": period_time,
                 "event": (
-                    "Goal"
-                    if ev_key == "goal"
+                    "Goal" if ev_key == "goal"
                     else ("Shot" if ev_key == "shot-on-goal" else "Missed Shot")
                 ),
                 "team": team,
