@@ -5,12 +5,19 @@ import pandas as pd
 import streamlit as st
 from datetime import date as _date, timedelta
 from io import StringIO
+import numpy as np
+import plotly.graph_objects as go
+
 
 # ---- Rink plot import with dual-path fallback ----
 try:
     from app.components.rink_plot import base_rink  # when running from repo root
 except ModuleNotFoundError:
-    from components.rink_plot import base_rink      # when running inside app/
+    try:
+        from components.rink_plot import base_rink      # when running inside app/
+    except ModuleNotFoundError:
+        st.error("Could not import rink_plot component. Please ensure the components directory exists.")
+        st.stop()
 
 st.set_page_config(page_title="NHL Shot Tracker", layout="wide")
 st.title("NHL Shot Tracker")
@@ -141,12 +148,14 @@ def _gc_team_maps(feed: dict) -> tuple[dict[int, str], int | None, int | None]:
     home_id = None
     away_id = None
     if isinstance(feed.get("homeTeam"), dict):
-        ht = feed["homeTeam"]; home_id = ht.get("id") or ht.get("teamId")
+        ht = feed["homeTeam"]
+        home_id = ht.get("id") or ht.get("teamId")
         ab = ht.get("abbrev") or ht.get("triCode") or ht.get("abbreviation")
         if isinstance(home_id, int) and isinstance(ab, str):
             id_to_abbrev[home_id] = ab
     if isinstance(feed.get("awayTeam"), dict):
-        at = feed["awayTeam"]; away_id = at.get("id") or at.get("teamId")
+        at = feed["awayTeam"]
+        away_id = at.get("id") or at.get("teamId")
         ab = at.get("abbrev") or at.get("triCode") or at.get("abbreviation")
         if isinstance(away_id, int) and isinstance(ab, str):
             id_to_abbrev[away_id] = ab
@@ -655,9 +664,53 @@ with left:
 
 # ---------- Plot ----------
 with right:
-    import plotly.graph_objects as go
-
     fig = base_rink()
+
+    # --- Add NHL rink lines (center red + two blue) ---
+    fig.add_shape(
+        type="line",
+        x0=0, x1=0, y0=-42.5, y1=42.5,
+        line=dict(color="red", width=3),
+        layer="above"
+    )
+
+    # Blue lines (approx at ±75 ft from center)
+    for x in (-75, 75):
+        fig.add_shape(
+            type="line",
+            x0=x, x1=x, y0=-42.5, y1=42.5,
+            line=dict(color="blue", width=3),
+            layer="above"
+        )
+
+    # --- Goal creases (semi-circles in light blue) ---
+    crease_radius = 6
+    crease_color = "rgba(173, 216, 230, 0.4)"  # light blue with transparency
+
+    # Half-circle from -90° to +90° (forward-facing)
+    theta = np.linspace(-np.pi/2, np.pi/2, 50)
+
+    # Left crease (goal near x = -89 ft)
+    x_left = -89 + crease_radius * np.cos(theta)
+    y_left = 0 + crease_radius * np.sin(theta)
+    fig.add_trace(go.Scatter(
+        x=x_left, y=y_left,
+        fill="toself", mode="lines",
+        line=dict(color="rgba(0,0,0,0)"),
+        fillcolor=crease_color,
+        showlegend=False
+    ))
+
+    # Right crease (goal near x = +89 ft) — mirror the arc
+    x_right = 89 - crease_radius * np.cos(theta)
+    y_right = 0 + crease_radius * np.sin(theta)
+    fig.add_trace(go.Scatter(
+        x=x_right, y=y_right,
+        fill="toself", mode="lines",
+        line=dict(color="rgba(0,0,0,0)"),
+        fillcolor=crease_color,
+        showlegend=False
+    ))
 
     # --- Rounded white rink surface under the lines ---
     # Coordinate system matches NHL feed: x in [-100,100], y in [-42.5,42.5]
