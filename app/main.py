@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import pandas as pd
 import httpx
 import streamlit as st
@@ -15,6 +17,11 @@ st.title("NHL Shot Tracker")
 
 STATS_BASE = "https://statsapi.web.nhl.com/api/v1"
 SITE_BASE = "https://api-web.nhle.com/v1"
+
+REQUIRED_COLS = [
+    "gamePk", "period", "periodTime", "event", "team",
+    "player", "x", "y", "strength", "is_goal", "matchup"
+]
 
 # ---------- Team color map (primary brand colors) ----------
 TEAM_COLORS = {
@@ -62,7 +69,7 @@ def _normalize_strength_label(label: str | None) -> str:
     }
     if l in mapping:
         return mapping[l]
-    # e.g., "4-on-4", "4v4", "3v3"
+    # e.g., "4-on-4", "4v4", "3v3", "5on3"
     l = l.replace("on", "v").replace("-", "").replace(" ", "")
     return l.upper()
 
@@ -349,6 +356,15 @@ def _shots_from_feed(feed: dict) -> tuple[pd.DataFrame, str, str | None]:
     df.attrs["parser_source"] = source
     return df, source, matchup
 
+def _empty_df() -> pd.DataFrame:
+    df = pd.DataFrame(columns=REQUIRED_COLS)
+    # Ensure dtypes roughly align where helpful
+    for c in ("x", "y"):
+        df[c] = pd.Series(dtype="float")
+    for c in ("is_goal",):
+        df[c] = pd.Series(dtype="int")
+    return df
+
 # ---------- Exact-date schedule (StatsAPI preferred) ----------
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_game_pks_for_date(d: _date) -> list[int]:
@@ -401,7 +417,7 @@ def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
     pks = fetch_game_pks_for_date(d)
     games_count = len(pks)
     if not pks:
-        return pd.DataFrame(), "no games", 0
+        return _empty_df(), "no games", 0
 
     frames = []
     used_sources = set()
@@ -423,11 +439,11 @@ def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
             if matchup:
                 matchup_map[int(pk)] = matchup
             if not df.empty:
-                frames.append(df)
+                frames.append(df.assign(gamePk=int(pk)))
                 used_sources.add(source)
 
     if not frames:
-        return pd.DataFrame(), "no shots", games_count
+        return _empty_df(), "no shots", games_count
 
     shots = pd.concat(frames, ignore_index=True)
 
@@ -438,11 +454,15 @@ def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
     shots["y"] = shots["y"].clip(-43, 43)
 
     # Add matchup column
-    if "gamePk" in shots.columns:
-        shots["matchup"] = shots["gamePk"].map(lambda pk: matchup_map.get(int(pk)) if pd.notna(pk) else None)
+    shots["matchup"] = shots["gamePk"].map(lambda pk: matchup_map.get(int(pk)) if pd.notna(pk) else None)
+
+    # Ensure all required columns exist
+    for col in REQUIRED_COLS:
+        if col not in shots.columns:
+            shots[col] = pd.NA
 
     label = "/".join(sorted(used_sources)) if used_sources else "Unknown"
-    return shots, label, games_count
+    return shots[REQUIRED_COLS], label, games_count
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_shots_between(start: _date, end: _date) -> tuple[pd.DataFrame, str, int]:
@@ -458,9 +478,9 @@ def fetch_shots_between(start: _date, end: _date) -> tuple[pd.DataFrame, str, in
             used.update((label or "Unknown").split("/"))
         day += timedelta(days=1)
     if not all_frames:
-        return pd.DataFrame(), "no data", games_total
+        return _empty_df(), "no data", games_total
     out = pd.concat(all_frames, ignore_index=True)
-    return out, "/".join(sorted(s for s in used if s and s not in {"no games", "no shots"})), games_total
+    return out[REQUIRED_COLS + ["source_date"]], "/".join(sorted(s for s in used if s and s not in {"no games", "no shots"})), games_total
 
 # =========================
 # UI
@@ -492,7 +512,7 @@ with left:
     if mode == "Single day":
         default = preset[1] if preset and preset[0] == "single" else _date.today()
         picked = st.date_input("Date", value=default, max_value=_date.today())
-        fetch = st.button("Retrieve Data")
+        fetch_click = st.button("Retrieve Data")
     else:
         if preset and preset[0] == "range":
             default_start, default_end = preset[1], preset[2]
@@ -503,42 +523,45 @@ with left:
             start_date, end_date = picked_range
         else:
             start_date, end_date = _date.today(), _date.today()
-        fetch = st.button("Retrieve Data")
+        fetch_click = st.button("Retrieve Data")
 
-# Load data (no demo mixing after explicit fetch)
-parser_label = None
-games_count = 0
-if "data_df" not in st.session_state:
-    st.session_state["data_df"] = None
-    st.session_state["data_dates"] = None
+# --- Session state bootstrapping (API-only; default = today) ---
+if "initialized" not in st.session_state:
+    st.session_state["initialized"] = True
+    st.session_state["data_df"] = _empty_df()
+    st.session_state["data_dates"] = _date.today()
     st.session_state["games_count"] = 0
 
-if fetch:
+    # Auto-fetch once for today on first load
+    df_live, parser_label_boot, games_boot = fetch_shots_for_date(_date.today())
+    st.session_state["data_df"] = df_live
+    st.session_state["games_count"] = games_boot
+    st.session_state["parser_label"] = parser_label_boot if not df_live.empty else None
+
+# ---------- Load (refetch if button clicked) ----------
+parser_label = st.session_state.get("parser_label")
+games_count = st.session_state.get("games_count", 0)
+df = st.session_state.get("data_df", _empty_df())
+
+if fetch_click:
     with st.spinner("Fetching NHL data..."):
         if mode == "Single day":
             df_live, parser_label, games_count = fetch_shots_for_date(picked)
+            st.session_state["data_dates"] = picked
         else:
             df_live, parser_label, games_count = fetch_shots_between(start_date, end_date)
+            st.session_state["data_dates"] = (start_date, end_date)
 
-        if df_live.empty:
-            st.info("No data for the selected date(s).")
-            df = pd.DataFrame(columns=["gamePk","period","periodTime","event","team","player","x","y","strength","is_goal","matchup"])
-            st.session_state["data_df"] = df
-            st.session_state["data_dates"] = (picked if mode == "Single day" else (start_date, end_date))
-            st.session_state["games_count"] = 0
-            parser_label = None
-        else:
-            df = df_live
-            st.session_state["data_df"] = df
-            st.session_state["data_dates"] = (picked if mode == "Single day" else (start_date, end_date))
-            st.session_state["games_count"] = games_count
-else:
-    df = st.session_state.get("data_df")
-    games_count = st.session_state.get("games_count", 0)
-    if df is None:
-        df = pd.read_csv("data/curated/demo_shots.csv")
-        if "matchup" not in df.columns:
-            df["matchup"] = None
+        st.session_state["data_df"] = df_live
+        st.session_state["games_count"] = games_count
+        st.session_state["parser_label"] = None if df_live.empty else parser_label
+        df = df_live
+
+# Ensure df has required columns even if empty
+if not set(REQUIRED_COLS).issubset(df.columns):
+    for col in REQUIRED_COLS:
+        if col not in df.columns:
+            df[col] = pd.NA
 
 # ---------- Compact Summary (single row) ----------
 with left:
@@ -553,25 +576,22 @@ with left:
     c3.metric("Goals", total_goals)
     c4.metric("Players", uniq_players)
     c5.metric("Teams", uniq_teams)
-    if parser_label:
-        st.caption(f"Parsed via: {parser_label}")
+    if st.session_state.get("parser_label"):
+        st.caption(f"Parsed via: {st.session_state['parser_label']}")
 
 # ---------- Filters ----------
 with left:
-    # Player filter grouped by team in label (TEAM — Player)
-    if "player" in df and "team" in df:
+    # Player multiselect grouped by team in the label (TEAM — Player)
+    label_to_player: dict[str, str] = {}
+    if "player" in df and "team" in df and not df.empty:
         players = df[["player", "team"]].dropna().drop_duplicates().sort_values(["team", "player"])
         label_to_player = {f"{row.team} — {row.player}": row.player for row in players.itertuples(index=False)}
-        player_opts = ["All"] + list(label_to_player.keys())
+        player_opts = list(label_to_player.keys())
     else:
-        label_to_player = {}
-        player_opts = ["All"]
+        player_opts = []
 
-    selected_player_label = st.selectbox("Player", options=player_opts)
-    if selected_player_label == "All":
-        selected_player = "All"
-    else:
-        selected_player = label_to_player.get(selected_player_label, "All")
+    selected_player_labels = st.multiselect("Players", options=player_opts, default=[])
+    selected_players = {label_to_player[lbl] for lbl in selected_player_labels} if selected_player_labels else None
 
     # Matchup filter only in single-day mode
     matchup_opts = []
@@ -582,13 +602,13 @@ with left:
 
     goals_only = st.checkbox("Show only goals", value=False)
 
-# Apply filters
+# Apply filters (guard empties)
 mask = pd.Series(True, index=df.index)
-if selected_player != "All" and "player" in df:
-    mask &= df["player"] == selected_player
-if selected_matchups and "matchup" in df:
+if selected_players and "player" in df.columns:
+    mask &= df["player"].isin(selected_players)
+if selected_matchups and "matchup" in df.columns:
     mask &= df["matchup"].isin(selected_matchups)
-if goals_only and "is_goal" in df:
+if goals_only and "is_goal" in df.columns:
     mask &= df["is_goal"] == 1
 
 filtered = df[mask].copy()
@@ -604,33 +624,28 @@ with right:
         plot_bgcolor="white",
         paper_bgcolor="white",
         margin=dict(l=10, r=10, t=20, b=10),
-        height=520,  # keeps the whole tool visible without scrolling (content area)
+        height=520,  # keeps main UI visible without scroll
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
 
-    if not filtered.empty:
-        # Colors
-        colors_shots = [TEAM_COLORS.get(t, "#888888") for t in filtered["team"]]
-
-        # Hover: Player (TEAM) — STRENGTH only for goals
+    if not filtered.empty and {"x","y"}.issubset(filtered.columns):
+        # Hover text helper
         def _hover_row(r):
-            base = f"{r['player']} ({r['team']})"
-            if r.get("is_goal", 0) == 1 and isinstance(r.get("strength"), str) and r["strength"] != "Unknown":
+            base = f"{r.get('player','Unknown')} ({r.get('team','')})".strip()
+            if r.get("is_goal", 0) == 1 and isinstance(r.get("strength"), str) and r["strength"] not in (None, "", "Unknown"):
                 return f"{base} — {r['strength']}"
             return base
 
-        texts = filtered.apply(_hover_row, axis=1).tolist()
-
-        # Layer: non-goals under, goals over (star), black outline for visibility on white
-        non_goals = filtered[filtered["is_goal"] != 1]
-        goals = filtered[filtered["is_goal"] == 1]
+        # Separate goals vs non-goals for nicer layering
+        non_goals = filtered[filtered["is_goal"] != 1] if "is_goal" in filtered else filtered
+        goals = filtered[filtered["is_goal"] == 1] if "is_goal" in filtered else filtered.iloc[0:0]
 
         if not non_goals.empty:
             fig.add_trace(go.Scatter(
                 x=non_goals["x"], y=non_goals["y"],
                 mode="markers",
                 marker=dict(
-                    color=[TEAM_COLORS.get(t, "#888888") for t in non_goals["team"]],
+                    color=[TEAM_COLORS.get(t, "#888888") for t in (non_goals["team"] if "team" in non_goals else [""]*len(non_goals))],
                     size=7, opacity=0.8,
                     line=dict(color="black", width=0.8),
                 ),
@@ -644,7 +659,7 @@ with right:
                 x=goals["x"], y=goals["y"],
                 mode="markers",
                 marker=dict(
-                    color=[TEAM_COLORS.get(t, "#888888") for t in goals["team"]],
+                    color=[TEAM_COLORS.get(t, "#888888") for t in (goals["team"] if "team" in goals else [""]*len(goals))],
                     size=9, opacity=0.95, symbol="star",
                     line=dict(color="black", width=1.0),
                 ),
@@ -655,7 +670,7 @@ with right:
 
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("No data for the current filters.")
+        st.info("No data for the selected date(s).")
 
 # ---------- Export ----------
 with left:
@@ -686,5 +701,5 @@ if not filtered.empty and isinstance(st.session_state.get("data_dates"), tuple):
 st.caption(
     "Source: NHL Stats/GameCenter APIs • "
     f"Rows: {len(filtered)} • "
-    f"Filters: player={selected_player}, goals_only={goals_only}"
+    f"Filters: players={len(selected_players) if selected_players else 'All'}, goals_only={goals_only}"
 )
