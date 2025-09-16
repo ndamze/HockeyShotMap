@@ -5,7 +5,7 @@
 https://hockeyshotmap-sparkerdata.streamlit.app/
 
 ![screenshot](docs/screenshot.png)
-=======
+
 **Interactive Streamlit app for visualizing NHL shots and goals** on a regulation rink. Pulls **live** and **historical** data from NHL endpoints (StatsAPI + GameCenter fallback), with date/range selection, matchup filtering, player filters, and CSV export.
 
 <a href="https://hockeyshotmap-sparkerdata.streamlit.app/">
@@ -13,7 +13,6 @@ https://hockeyshotmap-sparkerdata.streamlit.app/
 </a>
 
 </div>
->>>>>>> 204d71f (docs: polish README and add prominent Streamlit link badge)
 
 ---
 
