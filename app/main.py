@@ -2,7 +2,11 @@ import streamlit as st
 import pandas as pd
 import subprocess, sys
 from pathlib import Path
-from app.components.rink_plot import base_rink, add_shots
+try:
+    from app.components.rink_plot import base_rink, add_shots  # when repo root is on PYTHONPATH
+except ModuleNotFoundError:
+    from components.rink_plot import base_rink, add_shots       # when running from inside app/
+
 
 st.set_page_config(page_title="Hockey Shot Maps", layout="wide")
 st.title("Hockey Shot Heatmaps")
