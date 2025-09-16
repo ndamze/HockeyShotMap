@@ -1,74 +1,120 @@
-import streamlit as st
-import pandas as pd
-import subprocess, sys
+import sys
 from pathlib import Path
-try:
-    from app.components.rink_plot import base_rink, add_shots  # when repo root is on PYTHONPATH
-except ModuleNotFoundError:
-    from components.rink_plot import base_rink, add_shots       # when running from inside app/
+from datetime import date as _date, datetime
+import pandas as pd
+import httpx
+import streamlit as st
 
+# ---- Rink plot import with dual-path fallback ----
+try:
+    from app.components.rink_plot import base_rink, add_shots  # when repo root on PYTHONPATH
+except ModuleNotFoundError:
+    from components.rink_plot import base_rink, add_shots       # when running inside app/
 
 st.set_page_config(page_title="Hockey Shot Maps", layout="wide")
 st.title("Hockey Shot Heatmaps")
 
-# Sidebar and data controls
-left, right = st.columns([1, 3])
-with left:
-    st.subheader("Data source")
-    live = st.toggle("Live mode (today's games)", value=False)
+STATS_BASE = "https://statsapi.web.nhl.com/api/v1"
+SITE_BASE = "https://api-web.nhle.com/v1"
 
-    if live and st.button("Fetch live shots now"):
-        # Run the ingest script to grab today's data
-        result = subprocess.run(
-            [sys.executable, "scripts/ingest_live.py"],
-            capture_output=True,
-            text=True,
+# ---------- Parsers (StatsAPI + GameCenter fallback) ----------
+STATS_SHOT_EVENTS = {"Shot", "Missed Shot", "Goal"}
+GC_SHOT_EVENTS = {"shot-on-goal", "missed-shot", "goal"}
+
+def _rows_from_statsapi(feed: dict) -> list[dict]:
+    rows: list[dict] = []
+    plays = feed.get("liveData", {}).get("plays", {}).get("allPlays", []) or []
+    for p in plays:
+        ev = (p.get("result", {}) or {}).get("event")
+        if ev not in STATS_SHOT_EVENTS:
+            continue
+        coords = p.get("coordinates") or {}
+        x, y = coords.get("x"), coords.get("y")
+        if x is None or y is None:
+            continue
+
+        about = p.get("about") or {}
+        team = (p.get("team") or {}).get("triCode") or (p.get("team") or {}).get("name")
+        players = p.get("players") or []
+        shooter = None
+        for pl in players:
+            if pl.get("playerType") in ("Shooter", "Scorer"):
+                shooter = (pl.get("player") or {}).get("fullName")
+                break
+
+        strength = ((p.get("result") or {}).get("strength") or {}).get("name") or "Unknown"
+        rows.append(
+            {
+                "gamePk": about.get("gamePk"),
+                "period": about.get("period"),
+                "periodTime": about.get("periodTime"),
+                "event": ev,
+                "team": team,
+                "player": shooter or "Unknown",
+                "x": float(x),
+                "y": float(y),
+                "strength": strength,
+                "is_goal": 1 if ev == "Goal" else 0,
+            }
         )
-        st.code(result.stdout or "(no stdout)")
-        if result.stderr:
-            st.error(result.stderr)
+    return rows
 
-    # Pick which CSV to read based on mode
-    data_path = Path(
-        "data/curated/shots_latest.csv" if live else "data/curated/demo_shots.csv"
+def _rows_from_gamecenter(feed: dict) -> list[dict]:
+    rows: list[dict] = []
+    plays_root = feed.get("plays") or {}
+    plays = (
+        plays_root.get("all")
+        or plays_root.get("currentPlay")
+        or plays_root.get("byPeriod")
+        or []
     )
 
-# Load data
-if data_path.exists():
-    df = pd.read_csv(data_path)
-else:
-    df = pd.DataFrame(columns=["x", "y", "player", "strength", "is_goal"])
+    if isinstance(plays, list) and plays and isinstance(plays[0], dict) and "plays" in plays[0]:
+        grouped = []
+        for block in plays:
+            grouped.extend(block.get("plays") or [])
+        plays = grouped
 
-# Show parser source if available
-parser_source = getattr(df, "attrs", {}).get("parser_source")
-if parser_source:
-    st.sidebar.info(f"Data parsed using **{parser_source}**")
+    if not isinstance(plays, list):
+        plays = []
 
-# Sidebar filters
-with left:
-    player = st.selectbox(
-        "Player", options=["All"] + sorted(df["player"].dropna().unique().tolist())
-    )
-    strength = st.selectbox(
-        "Game state", options=["All"] + sorted(df["strength"].dropna().unique().tolist())
-    )
-    view_goals = st.checkbox("Show only goals", value=False)
+    for p in plays:
+        ev_key = (p.get("typeDescKey") or p.get("typeCode") or "").lower()
+        if ev_key not in GC_SHOT_EVENTS:
+            continue
 
-# Apply filters
-mask = pd.Series(True, index=df.index)
-if player != "All":
-    mask &= df["player"] == player
-if strength != "All":
-    mask &= df["strength"] == strength
-if view_goals:
-    mask &= df["is_goal"] == 1
+        det = p.get("details") or {}
+        x, y = det.get("xCoord"), det.get("yCoord")
+        if x is None or y is None:
+            continue
 
-filtered = df[mask].copy()
+        team = det.get("eventOwnerTeamAbbrev") or det.get("eventOwnerTeamId") or None
+        shooter = det.get("shootingPlayerName") or det.get("scoringPlayerName") or "Unknown"
 
-# Plot
-with right:
-    fig = base_rink()
-    fig = add_shots(fig, filtered)
-    st.plotly_chart(fig, use_container_width=True)
+        pd_desc = p.get("periodDescriptor") or {}
+        period = pd_desc.get("number")
+        period_time = p.get("timeInPeriod") or p.get("timeRemaining") or None
 
-st.caption(f"Rows: {len(filtered)} (source: {'live' if live else 'demo'})")
+        raw_strength = (det.get("strength") or "").lower()
+        strength = {
+            "ev": "5v5",
+            "even": "5v5",
+            "pp": "PP",
+            "power play": "PP",
+            "sh": "PK",
+            "penalty kill": "PK",
+        }.get(raw_strength, raw_strength.upper() if raw_strength else "Unknown")
+
+        rows.append(
+            {
+                "gamePk": feed.get("id") or feed.get("gameId"),
+                "period": period,
+                "periodTime": period_time,
+                "event": "Goal" if ev_key == "goal" else ("Shot" if ev_key == "shot-on-goal" else "Missed Shot"),
+                "team": team,
+                "player": shooter,
+                "x": float(x),
+                "y": float(y),
+                "strength": strength,
+                "is_goal": 1 if ev_key == "goal" else 0,
+            }
