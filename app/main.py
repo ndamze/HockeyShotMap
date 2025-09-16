@@ -62,26 +62,47 @@ def _rows_from_statsapi(feed: dict) -> list[dict]:
 
 def _rows_from_gamecenter(feed: dict) -> list[dict]:
     rows: list[dict] = []
-    plays_root = feed.get("plays") or {}
-    plays = (
-        plays_root.get("all")
-        or plays_root.get("currentPlay")
-        or plays_root.get("byPeriod")
-        or []
-    )
 
-    if isinstance(plays, list) and plays and isinstance(plays[0], dict) and "plays" in plays[0]:
-        grouped = []
-        for block in plays:
-            grouped.extend(block.get("plays") or [])
-        plays = grouped
+    # 1) Normalize `plays` into a flat list of play dicts, regardless of shape
+    plays_root = feed.get("plays", [])
+    plays: list[dict] = []
 
+    def extend_from_candidate(cand):
+        nonlocal plays
+        if cand is None:
+            return
+        if isinstance(cand, list):
+            if cand and isinstance(cand[0], dict) and "plays" in cand[0]:
+                # shape: [{"plays": [...]}, {"plays": [...]}, ...]  (by-period blocks)
+                for block in cand:
+                    plays.extend(block.get("plays") or [])
+            else:
+                # shape: direct list of plays
+                plays.extend(cand)
+        elif isinstance(cand, dict):
+            # rare: single block with a "plays" key
+            plays.extend(cand.get("plays", []))
+
+    if isinstance(plays_root, dict):
+        # common GC shapes
+        extend_from_candidate(plays_root.get("all"))
+        extend_from_candidate(plays_root.get("byPeriod"))
+        extend_from_candidate(plays_root.get("currentPlay"))
+        # in case it already has a "plays" list at the top level
+        extend_from_candidate(plays_root)
+    elif isinstance(plays_root, list):
+        extend_from_candidate(plays_root)
+    else:
+        plays = []
+
+    # guard
     if not isinstance(plays, list):
         plays = []
 
+    # 2) Convert GC plays to our rows
     for p in plays:
         ev_key = (p.get("typeDescKey") or p.get("typeCode") or "").lower()
-        if ev_key not in GC_SHOT_EVENTS:
+        if ev_key not in {"shot-on-goal", "missed-shot", "goal"}:
             continue
 
         det = p.get("details") or {}
@@ -124,6 +145,7 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
                 "is_goal": 1 if ev_key == "goal" else 0,
             }
         )
+
     return rows
 
 
