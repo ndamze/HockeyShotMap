@@ -1,0 +1,1 @@
+# Placeholder for density/hexbin heatmaps (Plotly or numpy-based kernels).

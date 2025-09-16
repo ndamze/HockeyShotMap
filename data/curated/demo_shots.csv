@@ -1,0 +1,11 @@
+x,y,player,strength,is_goal
+-70,0,Aho,5v5,0
+-30,10,Aho,PP,1
+10,-15,Matthews,5v5,0
+40,20,Pastrnak,5v5,0
+75,-5,Svechnikov,PK,1
+60,30,Aho,5v5,0
+-55,-25,Matthews,PP,0
+20,5,Pastrnak,5v5,1
+85,0,Svechnikov,5v5,1
+-80,12,Aho,PK,0

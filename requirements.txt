@@ -1,0 +1,12 @@
+streamlit
+plotly
+pandas
+numpy
+httpx
+duckdb
+scikit-learn
+pydantic
+pytest
+ruff
+black
+mypy
