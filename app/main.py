@@ -671,7 +671,7 @@ with right:
         type="line",
         x0=0, x1=0, y0=-42.5, y1=42.5,
         line=dict(color="red", width=3),
-        layer="above"
+        layer="below"
     )
 
     # Blue lines (approx at ±75 ft from center)
@@ -680,7 +680,7 @@ with right:
             type="line",
             x0=x, x1=x, y0=-42.5, y1=42.5,
             line=dict(color="blue", width=3),
-            layer="above"
+            layer="below"
         )
 
     # --- Goal creases (semi-circles in light blue) ---
@@ -698,7 +698,9 @@ with right:
         fill="toself", mode="lines",
         line=dict(color="rgba(0,0,0,0)"),
         fillcolor=crease_color,
-        showlegend=False
+        showlegend=False,
+        hoverinfo="skip",
+        opacity=0.4,
     ))
 
     # Right crease (goal near x = +89 ft) — mirror the arc
@@ -709,7 +711,9 @@ with right:
         fill="toself", mode="lines",
         line=dict(color="rgba(0,0,0,0)"),
         fillcolor=crease_color,
-        showlegend=False
+        showlegend=False,
+        hoverinfo="skip",
+        opacity=0.4,
     ))
 
     # --- Rounded white rink surface under the lines ---
