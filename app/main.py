@@ -669,21 +669,34 @@ with right:
             orientation="h",
             yanchor="bottom", y=1.02,
             xanchor="right", x=1,
-            font=dict(color="black"),   # <- legend text black
-            bgcolor="rgba(0,0,0,0)",    # <- transparent background (prevents boxy look)
+            font=dict(color="black"),
+            bgcolor="rgba(0,0,0,0)",
             borderwidth=0
         ),
+        hoverlabel=dict(font=dict(color="black")),
     )
 
     if not filtered.empty:
-        # Colors & hover text (robust to missing 'team'/'strength')
-        teams_series = filtered["team"] if "team" in filtered.columns else pd.Series([None] * len(filtered), index=filtered.index)
-        colors = [TEAM_COLORS.get(t, "#888888") for t in teams_series.fillna("")]
+        # Hover text helper: Player (TEAM) + period/time, and strength for goals
         def _hover_row(r):
-            base = f"{r.get('player','Unknown')} ({r.get('team','')})".strip()
-            if r.get("is_goal", 0) == 1 and isinstance(r.get("strength"), str) and r["strength"] not in (None, "", "Unknown"):
-                return f"{base} — {r['strength']}"
-            return base
+            name = r.get("player") or "Unknown"
+            team = r.get("team") or ""
+            period = r.get("period")
+            try:
+                pnum = int(period) if pd.notna(period) else None
+            except Exception:
+                pnum = None
+            ptime = r.get("periodTime") or ""
+            when = f"P{pnum} {ptime}".strip() if pnum else ptime
+
+            label = f"{name} ({team})"
+            if when:
+                label += f"<br>{when}"
+            if int(r.get("is_goal", 0) or 0) == 1:
+                stg = r.get("strength")
+                if isinstance(stg, str) and stg and stg != "Unknown":
+                    label += f" — {stg}"
+            return label
 
         # Separate goals vs non-goals for nicer layering
         non_goals = filtered[filtered["is_goal"] != 1] if "is_goal" in filtered else filtered
@@ -694,12 +707,13 @@ with right:
                 x=non_goals.get("x", []), y=non_goals.get("y", []),
                 mode="markers",
                 marker=dict(
-                    color=[TEAM_COLORS.get(t, "#888888") for t in non_goals.get("team", pd.Series([""]*len(non_goals))).fillna("")],
+                    color=[TEAM_COLORS.get(t, "#888888")
+                           for t in non_goals.get("team", pd.Series([""]*len(non_goals))).fillna("")],
                     size=7, opacity=0.8,
                     line=dict(color="black", width=0.8),
                 ),
                 text=[_hover_row(r) for _, r in non_goals.iterrows()],
-                hovertemplate="%{text}",
+                hovertemplate="%{text}<extra></extra>",
                 name="Shots",
             ))
 
@@ -708,12 +722,13 @@ with right:
                 x=goals.get("x", []), y=goals.get("y", []),
                 mode="markers",
                 marker=dict(
-                    color=[TEAM_COLORS.get(t, "#888888") for t in goals.get("team", pd.Series([""]*len(goals))).fillna("")],
+                    color=[TEAM_COLORS.get(t, "#888888")
+                           for t in goals.get("team", pd.Series([""]*len(goals))).fillna("")],
                     size=9, opacity=0.95, symbol="star",
                     line=dict(color="black", width=1.0),
                 ),
                 text=[_hover_row(r) for _, r in goals.iterrows()],
-                hovertemplate="%{text}",
+                hovertemplate="%{text}<extra></extra>",
                 name="Goals",
             ))
 
