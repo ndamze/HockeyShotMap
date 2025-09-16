@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/python-3.11-blue.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
-Context-aware hockey shot maps and player pages – with optional **live(ish)** data pulls. It normalizes rink coordinates, engineers features (distance, angle, rebounds, rush), and renders interactive heatmaps.
+Context-aware hockey shot maps and player pages – with (optional) daily data pulls. It normalizes rink coordinates, engineers features (distance, angle, rebounds, rush), and renders interactive heatmaps.
 
 **What’s different**
 - Context filters (5v5 / PP / PK / 3v3, time windows, rebound chains)
