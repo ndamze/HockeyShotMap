@@ -10,8 +10,8 @@ try:
 except ModuleNotFoundError:
     from components.rink_plot import base_rink, add_shots
 
-st.set_page_config(page_title="Hockey Shot Maps", layout="wide")
-st.title("Hockey Shot Heatmaps")
+st.set_page_config(page_title="NHL Shot Tracker", layout="wide")
+st.title("NHL Shot Tracker")
 
 STATS_BASE = "https://statsapi.web.nhl.com/api/v1"
 SITE_BASE = "https://api-web.nhle.com/v1"
@@ -60,6 +60,52 @@ def _rows_from_statsapi(feed: dict) -> list[dict]:
     return rows
 
 
+def _gc_team_maps(feed: dict) -> tuple[dict, dict]:
+    """
+    Build team id/abbrev maps from GameCenter feed.
+    Returns (id->abbrev, abbrev->abbrev) where 2nd is just passthrough helper.
+    """
+    id_to_abbrev: dict[int, str] = {}
+    # Common GC shapes
+    for key in ("homeTeam", "awayTeam"):
+        team = feed.get(key)
+        if isinstance(team, dict):
+            tid = team.get("id") or team.get("teamId")
+            ab = team.get("abbrev") or team.get("triCode") or team.get("abbreviation")
+            if isinstance(tid, int) and isinstance(ab, str):
+                id_to_abbrev[tid] = ab
+    # Sometimes nested under "teams"
+    teams = feed.get("teams")
+    if isinstance(teams, dict):
+        for side in ("home", "away"):
+            team = teams.get(side)
+            if isinstance(team, dict):
+                tid = team.get("id") or team.get("teamId")
+                ab = team.get("abbrev") or team.get("triCode") or team.get("abbreviation")
+                if isinstance(tid, int) and isinstance(ab, str):
+                    id_to_abbrev[tid] = ab
+    return id_to_abbrev, {}  # second value kept for future extension
+
+
+def _infer_strength_from_skaters(det: dict) -> str:
+    """
+    Derive 5v5/PP/PK from skater counts when explicit strength is missing.
+    """
+    hs = det.get("homeSkaters")
+    as_ = det.get("awaySkaters")
+    if isinstance(hs, int) and isinstance(as_, int):
+        if hs == 5 and as_ == 5:
+            return "5v5"
+        # if one side < the other, call PP/PK
+        if hs > as_:
+            # home has advantage
+            return "PP" if max(hs, as_) >= 5 and hs - as_ >= 1 else "EV"
+        if as_ > hs:
+            return "PK" if max(hs, as_) >= 5 and as_ - hs >= 1 else "EV"
+        return "EV"
+    return "Unknown"
+
+
 def _rows_from_gamecenter(feed: dict) -> list[dict]:
     rows: list[dict] = []
 
@@ -96,6 +142,8 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
     if not isinstance(plays, list):
         plays = []
 
+    id_to_abbrev, _ = _gc_team_maps(feed)
+
     # 2) Convert GC plays to our rows
     for p in plays:
         ev_key = (p.get("typeDescKey") or p.get("typeCode") or "").lower()
@@ -107,9 +155,13 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
         if x is None or y is None:
             continue
 
-        team = det.get("eventOwnerTeamAbbrev") or det.get("eventOwnerTeamId") or None
+        team_raw = det.get("eventOwnerTeamAbbrev") or det.get("eventOwnerTeamId")
+        if isinstance(team_raw, int):
+            team = id_to_abbrev.get(team_raw) or str(team_raw)
+        else:
+            team = team_raw
 
-        # --- improved shooter name fallback ---
+        # shooter fallback
         shooter = det.get("shootingPlayerName") or det.get("scoringPlayerName")
         if not shooter:
             plist = p.get("players") or []
@@ -118,21 +170,23 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
                 if shooter:
                     break
         shooter = shooter or "Unknown"
-        # --- end fallback ---
 
         pd_desc = p.get("periodDescriptor") or {}
         period = pd_desc.get("number")
         period_time = p.get("timeInPeriod") or p.get("timeRemaining") or None
 
+        # strength fallback
         raw_strength = (det.get("strength") or "").lower()
-        strength = {
-            "ev": "5v5",
-            "even": "5v5",
-            "pp": "PP",
-            "power play": "PP",
-            "sh": "PK",
-            "penalty kill": "PK",
-        }.get(raw_strength, raw_strength.upper() if raw_strength else "Unknown")
+        if raw_strength in {"ev", "even"}:
+            strength = "5v5"
+        elif raw_strength in {"pp", "power play"}:
+            strength = "PP"
+        elif raw_strength in {"sh", "penalty kill"}:
+            strength = "PK"
+        elif raw_strength:
+            strength = raw_strength.upper()
+        else:
+            strength = _infer_strength_from_skaters(det)
 
         rows.append(
             {
@@ -266,14 +320,11 @@ def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
 
     shots = pd.concat(frames, ignore_index=True)
 
-    # De-dupe: some feeds overlap; build a stable key
-    if not shots.empty:
-        key_cols = ["gamePk", "period", "periodTime", "team", "player", "x", "y", "event"]
-        shots = shots.drop_duplicates(subset=[c for c in key_cols if c in shots.columns])
-
-        # Clip impossible coords (simple rink bounds)
-        shots["x"] = shots["x"].clip(-100, 100)
-        shots["y"] = shots["y"].clip(-43, 43)
+    # De-dupe & clip
+    key_cols = ["gamePk", "period", "periodTime", "team", "player", "x", "y", "event"]
+    shots = shots.drop_duplicates(subset=[c for c in key_cols if c in shots.columns])
+    shots["x"] = shots["x"].clip(-100, 100)
+    shots["y"] = shots["y"].clip(-43, 43)
 
     label = "/".join(sorted(used_sources)) if used_sources else "Unknown"
     return shots, label, games_count
@@ -322,15 +373,12 @@ with left:
 
     mode = st.radio("Mode", ["Single day", "Date range"], horizontal=True)
 
-    if "_preset" in st.session_state:
-        preset = st.session_state.pop("_preset")
-    else:
-        preset = None
+    preset = st.session_state.pop("_preset", None)
 
     if mode == "Single day":
         default = preset[1] if preset and preset[0] == "single" else _date.today()
         picked = st.date_input("Date", value=default, max_value=_date.today())
-        fetch = st.button("Fetch day")
+        fetch = st.button("Retrieve Data")
     else:
         if preset and preset[0] == "range":
             default_start, default_end = preset[1], preset[2]
@@ -341,12 +389,13 @@ with left:
             start_date, end_date = picked_range
         else:
             start_date, end_date = _date.today(), _date.today()
-        fetch = st.button("Fetch range")
+        fetch = st.button("Retrieve Data")
 
 # ---------- Load data ----------
 parser_label = None
 games_count = 0
 
+# Do not auto-load demo when user explicitly fetches. Demo only shown if nothing has been fetched yet.
 if "data_df" not in st.session_state:
     st.session_state["data_df"] = None
     st.session_state["data_dates"] = None
@@ -360,10 +409,10 @@ if fetch:
             df_live, parser_label, games_count = fetch_shots_between(start_date, end_date)
 
         if df_live.empty:
-            st.warning("No shots for the selected date(s). Falling back to demo data.")
-            df = pd.read_csv("data/curated/demo_shots.csv")
+            st.info("No data for the selected date(s).")
+            df = pd.DataFrame(columns=["gamePk", "period", "periodTime", "event", "team", "player", "x", "y", "strength", "is_goal"])
             st.session_state["data_df"] = df
-            st.session_state["data_dates"] = None
+            st.session_state["data_dates"] = (picked if mode == "Single day" else (start_date, end_date))
             st.session_state["games_count"] = 0
             parser_label = None
         else:
@@ -375,6 +424,7 @@ else:
     df = st.session_state.get("data_df")
     games_count = st.session_state.get("games_count", 0)
     if df is None:
+        # initial load only: show demo until the user presses "Retrieve Data"
         df = pd.read_csv("data/curated/demo_shots.csv")
 
 # ---------- Summary ----------
