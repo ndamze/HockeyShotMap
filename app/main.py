@@ -297,7 +297,7 @@ with left:
 
     mode = st.radio("Mode", ["Single day", "Date range"], horizontal=True)
 
-    if " _preset" in st.session_state:
+    if "_preset" in st.session_state:
         preset = st.session_state.pop("_preset")
     else:
         preset = None
