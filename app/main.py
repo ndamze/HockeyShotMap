@@ -6,9 +6,9 @@ from io import StringIO
 
 # ---- Rink plot import with dual-path fallback ----
 try:
-    from app.components.rink_plot import base_rink, add_shots
+    from app.components.rink_plot import base_rink  # we'll add our own scatter layer
 except ModuleNotFoundError:
-    from components.rink_plot import base_rink, add_shots
+    from components.rink_plot import base_rink
 
 st.set_page_config(page_title="NHL Shot Tracker", layout="wide")
 st.title("NHL Shot Tracker")
@@ -16,14 +16,69 @@ st.title("NHL Shot Tracker")
 STATS_BASE = "https://statsapi.web.nhl.com/api/v1"
 SITE_BASE = "https://api-web.nhle.com/v1"
 
-# ---------- Parsers (StatsAPI + GameCenter fallback) ----------
-STATS_SHOT_EVENTS = {"Shot", "Missed Shot", "Goal"}
-GC_SHOT_EVENTS = {"shot-on-goal", "missed-shot", "goal"}
+# ---------- Team color map (primary brand colors) ----------
+TEAM_COLORS = {
+    "ANA": "#FC4C02", "ARI": "#8C2633", "BOS": "#FFB81C", "BUF": "#003087",
+    "CGY": "#C8102E", "CAR": "#CC0000", "CHI": "#CF0A2C", "COL": "#6F263D",
+    "CBJ": "#002654", "DAL": "#006847", "DET": "#CE1126", "EDM": "#041E42",
+    "FLA": "#C8102E", "LAK": "#111111", "MIN": "#154734", "MTL": "#AF1E2D",
+    "NSH": "#FFB81C", "NJD": "#CE1126", "NYI": "#F47D30", "NYR": "#0038A8",
+    "OTT": "#C52032", "PHI": "#F74902", "PIT": "#FCB514", "SEA": "#99D9D9",
+    "SJS": "#006D75", "STL": "#002F87", "TBL": "#002868", "TOR": "#00205B",
+    "VAN": "#00205B", "VGK": "#B4975A", "WSH": "#041E42", "WPG": "#041E42",
+}
 
+# =========================
+# Helpers / Normalization
+# =========================
+
+def _norm_name_value(v) -> str | None:
+    """Extract a clean string from possibly nested/dict name fields."""
+    if isinstance(v, str):
+        s = v.strip()
+        return s if s else None
+    if isinstance(v, dict):
+        for k in ("default", "en", "English", "EN", "first", "last"):  # common GC patterns
+            if k in v and isinstance(v[k], str) and v[k].strip():
+                return v[k].strip()
+        # last resort: join all string values
+        parts = [str(x).strip() for x in v.values() if isinstance(x, str) and x.strip()]
+        return " ".join(parts) if parts else None
+    return None
+
+def _full_name(first, last, fallback: str | None = None) -> str:
+    f = _norm_name_value(first)
+    l = _norm_name_value(last)
+    if f or l:
+        return f"{f or ''} {l or ''}".strip()
+    return fallback or "Unknown"
+
+def _normalize_strength_label(label: str | None) -> str:
+    if not label:
+        return "Unknown"
+    l = str(label).strip().lower()
+    mapping = {
+        "even": "5v5", "ev": "5v5",
+        "power play": "PP", "pp": "PP",
+        "short handed": "PK", "sh": "PK", "penalty kill": "PK",
+    }
+    if l in mapping:
+        return mapping[l]
+    # Formats like "4-on-4" or "3v3"
+    l = l.replace("on", "v").replace("-", "").replace(" ", "")
+    return l.upper()
+
+# =========================
+# StatsAPI parser
+# =========================
+
+STATS_SHOT_EVENTS = {"Shot", "Missed Shot", "Goal"}
 
 def _rows_from_statsapi(feed: dict) -> list[dict]:
     rows: list[dict] = []
     plays = feed.get("liveData", {}).get("plays", {}).get("allPlays", []) or []
+    game_pk = (feed.get("gamePk") or
+               (feed.get("gameData") or {}).get("game", {}).get("pk"))
     for p in plays:
         ev = (p.get("result", {}) or {}).get("event")
         if ev not in STATS_SHOT_EVENTS:
@@ -33,21 +88,23 @@ def _rows_from_statsapi(feed: dict) -> list[dict]:
         if x is None or y is None:
             continue
 
-        about = p.get("about") or {}
-        team = (p.get("team") or {}).get("triCode") or (p.get("team") or {}).get("name")
-        players = p.get("players") or []
+        team_obj = p.get("team") or {}
+        team = team_obj.get("triCode") or team_obj.get("name")
+
         shooter = None
+        players = p.get("players") or []
         for pl in players:
             if pl.get("playerType") in ("Shooter", "Scorer"):
                 shooter = (pl.get("player") or {}).get("fullName")
                 break
 
-        strength = ((p.get("result") or {}).get("strength") or {}).get("name") or "Unknown"
+        strength = _normalize_strength_label(((p.get("result") or {}).get("strength") or {}).get("name"))
+
         rows.append(
             {
-                "gamePk": about.get("gamePk"),
-                "period": about.get("period"),
-                "periodTime": about.get("periodTime"),
+                "gamePk": game_pk,
+                "period": (p.get("about") or {}).get("period"),
+                "periodTime": (p.get("about") or {}).get("periodTime"),
                 "event": ev,
                 "team": team,
                 "player": shooter or "Unknown",
@@ -59,47 +116,64 @@ def _rows_from_statsapi(feed: dict) -> list[dict]:
         )
     return rows
 
+def _matchup_from_statsapi(feed: dict) -> str | None:
+    gd = feed.get("gameData") or {}
+    teams = gd.get("teams") or {}
+    home = (teams.get("home") or {}).get("triCode")
+    away = (teams.get("away") or {}).get("triCode")
+    if home and away:
+        return f"{away} @ {home}"
+    return None
 
-# ---------- GameCenter helpers ----------
-def _gc_team_maps(feed: dict) -> dict[int, str]:
-    """Build team id -> abbrev map from GameCenter feed."""
+# =========================
+# GameCenter parser
+# =========================
+
+GC_SHOT_EVENTS = {"shot-on-goal", "missed-shot", "goal"}
+
+def _gc_team_maps(feed: dict) -> tuple[dict[int, str], int | None, int | None]:
+    """id->abbrev, home_id, away_id"""
     id_to_abbrev: dict[int, str] = {}
-    for key in ("homeTeam", "awayTeam"):
-        team = feed.get(key)
-        if isinstance(team, dict):
-            tid = team.get("id") or team.get("teamId")
-            ab = team.get("abbrev") or team.get("triCode") or team.get("abbreviation")
-            if isinstance(tid, int) and isinstance(ab, str):
-                id_to_abbrev[tid] = ab
+    home_id = None
+    away_id = None
+    if isinstance(feed.get("homeTeam"), dict):
+        ht = feed["homeTeam"]; home_id = ht.get("id") or ht.get("teamId")
+        ab = ht.get("abbrev") or ht.get("triCode") or ht.get("abbreviation")
+        if isinstance(home_id, int) and isinstance(ab, str):
+            id_to_abbrev[home_id] = ab
+    if isinstance(feed.get("awayTeam"), dict):
+        at = feed["awayTeam"]; away_id = at.get("id") or at.get("teamId")
+        ab = at.get("abbrev") or at.get("triCode") or at.get("abbreviation")
+        if isinstance(away_id, int) and isinstance(ab, str):
+            id_to_abbrev[away_id] = ab
     teams = feed.get("teams")
     if isinstance(teams, dict):
         for side in ("home", "away"):
-            team = teams.get(side)
-            if isinstance(team, dict):
-                tid = team.get("id") or team.get("teamId")
-                ab = team.get("abbrev") or team.get("triCode") or team.get("abbreviation")
+            tm = teams.get(side)
+            if isinstance(tm, dict):
+                tid = tm.get("id") or tm.get("teamId")
+                ab = tm.get("abbrev") or tm.get("triCode") or tm.get("abbreviation")
                 if isinstance(tid, int) and isinstance(ab, str):
                     id_to_abbrev[tid] = ab
-    return id_to_abbrev
-
+                if side == "home" and home_id is None:
+                    home_id = tid
+                if side == "away" and away_id is None:
+                    away_id = tid
+    return id_to_abbrev, home_id, away_id
 
 def _gc_roster_map(feed: dict) -> dict[int, str]:
-    """Build playerId -> Full Name from typical GameCenter locations."""
+    """playerId -> Full Name (best effort)"""
     roster: dict[int, str] = {}
-
-    # 1) rosterSpots (common)
     for spot in feed.get("rosterSpots") or []:
         if not isinstance(spot, dict):
             continue
         pid = spot.get("playerId")
         fn, ln = spot.get("firstName"), spot.get("lastName")
-        full = (f"{fn} {ln}".strip() if fn or ln else None)
-        if isinstance(pid, int) and full:
+        full = _full_name(fn, ln)
+        if isinstance(pid, int) and full and full != "Unknown":
             roster[pid] = full
-
-    # 2) home/awayTeam 'sroster' or 'roster' arrays
-    for key in ("homeTeam", "awayTeam"):
-        team = feed.get(key)
+    for team_key in ("homeTeam", "awayTeam"):
+        team = feed.get(team_key)
         if not isinstance(team, dict):
             continue
         for subkey in ("sroster", "roster", "lineup"):
@@ -110,83 +184,60 @@ def _gc_roster_map(feed: dict) -> dict[int, str]:
                 if not isinstance(item, dict):
                     continue
                 pid = item.get("playerId") or item.get("id")
-                fn = item.get("firstName") or item.get("first_name")
-                ln = item.get("lastName") or item.get("last_name")
-                full = (f"{fn} {ln}".strip() if fn or ln else item.get("playerName"))
-                if isinstance(pid, int) and full:
+                full = (_norm_name_value(item.get("playerName"))
+                        or _full_name(item.get("firstName"), item.get("lastName")))
+                if isinstance(pid, int) and full and full != "Unknown":
                     roster[pid] = full
-
     return roster
 
-
 def _infer_strength_from_skaters(det: dict, owner_team_id: int | None, home_id: int | None, away_id: int | None) -> str:
-    """Derive 5v5 / PP / PK from skater counts + which team took the shot."""
-    def _to_int(val):
-        try:
-            return int(val)
-        except (TypeError, ValueError):
-            return None
-
+    def _to_int(v):
+        try: return int(v)
+        except (TypeError, ValueError): return None
     hs = _to_int(det.get("homeSkaters"))
     as_ = _to_int(det.get("awaySkaters"))
     if hs is None or as_ is None:
-        # Try situationCode like "5v4" / "4x5"
         sc = (det.get("situationCode") or "").lower()
-        # extract two ints in order
         nums = []
         cur = ""
         for ch in sc:
             if ch.isdigit():
                 cur += ch
             elif cur:
-                nums.append(int(cur))
-                cur = ""
+                nums.append(int(cur)); cur = ""
         if cur:
             nums.append(int(cur))
         if len(nums) == 2:
             hs, as_ = nums[0], nums[1]
-
     if hs is None or as_ is None:
         return "Unknown"
-
     if hs == 5 and as_ == 5:
         return "5v5"
-
-    # Decide PP/PK for the shooting team
     if owner_team_id and home_id and away_id:
-        owner_is_home = (owner_team_id == home_id)
+        owner_is_home = owner_team_id == home_id
         owner_skaters = hs if owner_is_home else as_
         other_skaters = as_ if owner_is_home else hs
         if owner_skaters > other_skaters:
             return "PP"
-        elif owner_skaters < other_skaters:
+        if owner_skaters < other_skaters:
             return "PK"
-        else:
-            return "EV"
-
-    # Fallback if we don't know which side is owner
-    if hs > as_:
-        return "PP"
-    if as_ > hs:
-        return "PK"
+        return "EV"
+    if hs > as_: return "PP"
+    if as_ > hs: return "PK"
     return "EV"
-
 
 def _rows_from_gamecenter(feed: dict) -> list[dict]:
     rows: list[dict] = []
 
-    # 1) Normalize plays to a flat list (handles list/dict/by-period shapes)
+    # plays normalization
     plays_root = feed.get("plays", [])
     plays: list[dict] = []
-
     def extend_from_candidate(cand):
         nonlocal plays
-        if cand is None:
-            return
+        if cand is None: return
         if isinstance(cand, list):
             if cand and isinstance(cand[0], dict) and "plays" in cand[0]:
-                for block in cand:
-                    plays.extend(block.get("plays") or [])
+                for block in cand: plays.extend(block.get("plays") or [])
             else:
                 plays.extend(cand)
         elif isinstance(cand, dict):
@@ -196,17 +247,13 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
         extend_from_candidate(plays_root.get("all"))
         extend_from_candidate(plays_root.get("byPeriod"))
         extend_from_candidate(plays_root.get("currentPlay"))
-        extend_from_candidate(plays_root)  # if it already has "plays"
+        extend_from_candidate(plays_root)
     elif isinstance(plays_root, list):
         extend_from_candidate(plays_root)
 
-    # 2) Team maps, roster map
-    id_to_abbrev = _gc_team_maps(feed)
-    home_id = (feed.get("homeTeam") or {}).get("id") or (feed.get("teams", {}) or {}).get("home", {}).get("id")
-    away_id = (feed.get("awayTeam") or {}).get("id") or (feed.get("teams", {}) or {}).get("away", {}).get("id")
+    id_to_abbrev, home_id, away_id = _gc_team_maps(feed)
     roster = _gc_roster_map(feed)
 
-    # 3) Convert to rows
     for p in plays or []:
         ev_key = (p.get("typeDescKey") or p.get("typeCode") or "").lower()
         if ev_key not in GC_SHOT_EVENTS:
@@ -217,6 +264,7 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
         if x is None or y is None:
             continue
 
+        # team abbrev & owner id
         team_raw = det.get("eventOwnerTeamAbbrev") or det.get("eventOwnerTeamId")
         if isinstance(team_raw, int):
             team = id_to_abbrev.get(team_raw) or str(team_raw)
@@ -225,49 +273,37 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
             team = team_raw
             owner_team_id = det.get("eventOwnerTeamId") if isinstance(det.get("eventOwnerTeamId"), int) else None
 
-        # Shooter resolution (multi-stage)
-        shooter = det.get("shootingPlayerName") or det.get("scoringPlayerName")
+        # shooter resolution
+        shooter = (_norm_name_value(det.get("shootingPlayerName")) or
+                   _norm_name_value(det.get("scoringPlayerName")))
         if not shooter:
-            # (a) explicit role in players[]
             for pl in (p.get("players") or []):
                 role = (pl.get("typeDescKey") or pl.get("typeCode") or "").lower()
                 if role in {"shooter", "scorer"}:
-                    shooter = pl.get("playerName") or pl.get("fullName")
-                    if not shooter:
-                        fn, ln = pl.get("firstName"), pl.get("lastName")
-                        shooter = f"{fn} {ln}".strip() if (fn or ln) else None
-                    if shooter:
-                        break
+                    shooter = (_norm_name_value(pl.get("playerName")) or
+                               _full_name(pl.get("firstName"), pl.get("lastName")))
+                    if shooter: break
         if not shooter:
-            # (b) id match against players[] then roster
             pid = det.get("shootingPlayerId") or det.get("scoringPlayerId") or det.get("playerId")
             if pid is not None:
                 for pl in (p.get("players") or []):
                     if pl.get("playerId") == pid:
-                        shooter = pl.get("playerName") or pl.get("fullName") or (
-                            f"{pl.get('firstName','').strip()} {pl.get('lastName','').strip()}".strip()
-                        )
-                        if shooter:
-                            break
+                        shooter = (_norm_name_value(pl.get("playerName")) or
+                                   _full_name(pl.get("firstName"), pl.get("lastName")))
+                        if shooter: break
                 if not shooter:
                     shooter = roster.get(pid)
         shooter = shooter or "Unknown"
 
+        # period/time
         pd_desc = p.get("periodDescriptor") or {}
         period = pd_desc.get("number")
         period_time = p.get("timeInPeriod") or p.get("timeRemaining") or None
 
-        # Strength normalization / derivation
-        raw_strength = (det.get("strength") or "").lower()
-        if raw_strength in {"ev", "even"}:
-            strength = "5v5"
-        elif raw_strength in {"pp", "power play"}:
-            strength = "PP"
-        elif raw_strength in {"sh", "penalty kill"}:
-            strength = "PK"
-        elif raw_strength:
-            # sometimes "4v4", "3v3" etc.
-            strength = raw_strength.upper()
+        # strength
+        raw_strength = _norm_name_value(det.get("strength"))
+        if raw_strength:
+            strength = _normalize_strength_label(raw_strength)
         else:
             strength = _infer_strength_from_skaters(det, owner_team_id, home_id, away_id)
 
@@ -285,23 +321,43 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
                 "is_goal": 1 if ev_key == "goal" else 0,
             }
         )
-
     return rows
 
+def _matchup_from_gamecenter(feed: dict) -> str | None:
+    def _abbr(d, keys=("abbrev","triCode","abbreviation")):
+        if isinstance(d, dict):
+            for k in keys:
+                v = d.get(k)
+                if isinstance(v, str) and v: return v
+        return None
+    home = _abbr(feed.get("homeTeam")) or _abbr((feed.get("teams") or {}).get("home"))
+    away = _abbr(feed.get("awayTeam")) or _abbr((feed.get("teams") or {}).get("away"))
+    if home and away:
+        return f"{away} @ {home}"
+    return None
 
-def _shots_from_feed(feed: dict) -> pd.DataFrame:
+# =========================
+# Common utilities
+# =========================
+
+def _shots_from_feed(feed: dict) -> tuple[pd.DataFrame, str, str | None]:
+    """Return df, source_label, matchup."""
     rows = _rows_from_statsapi(feed)
+    matchup = None
     source = "StatsAPI"
-    if not rows:
+    if rows:
+        matchup = _matchup_from_statsapi(feed)
+    else:
         rows = _rows_from_gamecenter(feed)
         source = "GameCenter"
+        matchup = _matchup_from_gamecenter(feed)
+
     df = pd.DataFrame(
         rows,
         columns=["gamePk", "period", "periodTime", "event", "team", "player", "x", "y", "strength", "is_goal"],
     )
     df.attrs["parser_source"] = source
-    return df
-
+    return df, source, matchup
 
 # ---------- Exact-date schedule (StatsAPI preferred) ----------
 @st.cache_data(ttl=300, show_spinner=False)
@@ -309,30 +365,23 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
     """Return game PKs for exact date `d` (StatsAPI first; site API fallback filtered)."""
     wanted = d.isoformat()
 
-    # Preferred: StatsAPI schedule
+    # Preferred: StatsAPI
     try:
         url = f"{STATS_BASE}/schedule?date={wanted}"
         with httpx.Client(timeout=20.0, headers={"User-Agent": "SparkerData-HockeyShotMap/1.0"}, trust_env=True) as c:
-            r = c.get(url)
-            r.raise_for_status()
+            r = c.get(url); r.raise_for_status()
             data = r.json()
-        pks = []
-        for day in data.get("dates", []):
-            for g in day.get("games", []):
-                pk = g.get("gamePk")
-                if pk:
-                    pks.append(int(pk))
+        pks = [int(g["gamePk"]) for day in data.get("dates", []) for g in day.get("games", []) if g.get("gamePk")]
         if pks:
             return sorted(set(pks))
     except Exception:
         pass
 
-    # Fallback: site schedule (may include a week) -> filter to day
+    # Fallback: site schedule (filter to the day)
     try:
         url = f"{SITE_BASE}/schedule/{wanted}"
         with httpx.Client(timeout=20.0, headers={"User-Agent": "SparkerData-HockeyShotMap/1.0"}, trust_env=True) as c:
-            r = c.get(url)
-            r.raise_for_status()
+            r = c.get(url); r.raise_for_status()
             sched = r.json()
         games_iter = []
         if isinstance(sched.get("gameWeek"), list):
@@ -352,17 +401,15 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
         for g in games_iter:
             if date_of(g) == wanted:
                 pk = g.get("id") or g.get("gamePk") or g.get("gameId")
-                if pk:
-                    pks.append(int(pk))
+                if pk: pks.append(int(pk))
         return sorted(set(pks))
     except Exception:
         return []
 
-
-# ---------- Fetch shots (day / range), de-dupe & clean ----------
+# ---------- Fetch shots (day / range), add matchup, de-dupe & clean ----------
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
-    """Return (shots_df, source_label, games_count) for a given date."""
+    """Return (shots_df, parser_label(s), games_count) for a given date."""
     pks = fetch_game_pks_for_date(d)
     games_count = len(pks)
     if not pks:
@@ -370,26 +417,26 @@ def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
 
     frames = []
     used_sources = set()
+    matchup_map: dict[int, str] = {}
+
     with httpx.Client(timeout=20.0, headers={"User-Agent": "SparkerData-HockeyShotMap/1.0"}, trust_env=True) as c:
         for pk in pks:
             feed = None
             try:
-                r = c.get(f"{STATS_BASE}/game/{pk}/feed/live")
-                r.raise_for_status()
-                feed = r.json()
+                r = c.get(f"{STATS_BASE}/game/{pk}/feed/live"); r.raise_for_status(); feed = r.json()
             except Exception:
                 try:
-                    r = c.get(f"{SITE_BASE}/gamecenter/{pk}/play-by-play")
-                    r.raise_for_status()
-                    feed = r.json()
+                    r = c.get(f"{SITE_BASE}/gamecenter/{pk}/play-by-play"); r.raise_for_status(); feed = r.json()
                 except Exception:
                     feed = None
             if not feed:
                 continue
-            df = _shots_from_feed(feed)
+            df, source, matchup = _shots_from_feed(feed)
+            if matchup:
+                matchup_map[int(pk)] = matchup
             if not df.empty:
                 frames.append(df)
-                used_sources.add(df.attrs.get("parser_source", "Unknown"))
+                used_sources.add(source)
 
     if not frames:
         return pd.DataFrame(), "no shots", games_count
@@ -402,9 +449,12 @@ def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
     shots["x"] = shots["x"].clip(-100, 100)
     shots["y"] = shots["y"].clip(-43, 43)
 
+    # Add matchup column
+    if "gamePk" in shots.columns:
+        shots["matchup"] = shots["gamePk"].map(lambda pk: matchup_map.get(int(pk)) if pd.notna(pk) else None)
+
     label = "/".join(sorted(used_sources)) if used_sources else "Unknown"
     return shots, label, games_count
-
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_shots_between(start: _date, end: _date) -> tuple[pd.DataFrame, str, int]:
@@ -425,8 +475,10 @@ def fetch_shots_between(start: _date, end: _date) -> tuple[pd.DataFrame, str, in
     out = pd.concat(all_frames, ignore_index=True)
     return out, "/".join(sorted(s for s in used if s and s not in {"no games", "no shots"})), games_total
 
+# =========================
+# UI
+# =========================
 
-# ---------- Sidebar: date / range + filters ----------
 left, right = st.columns([1, 3])
 
 with left:
@@ -448,7 +500,6 @@ with left:
             st.session_state["_preset"] = ("range", start, end)
 
     mode = st.radio("Mode", ["Single day", "Date range"], horizontal=True)
-
     preset = st.session_state.pop("_preset", None)
 
     if mode == "Single day":
@@ -467,11 +518,9 @@ with left:
             start_date, end_date = _date.today(), _date.today()
         fetch = st.button("Retrieve Data")
 
-# ---------- Load data ----------
+# Load data (no demo mixing after explicit fetch)
 parser_label = None
 games_count = 0
-
-# No demo mixing after user fetch; demo only before any fetch
 if "data_df" not in st.session_state:
     st.session_state["data_df"] = None
     st.session_state["data_dates"] = None
@@ -486,7 +535,7 @@ if fetch:
 
         if df_live.empty:
             st.info("No data for the selected date(s).")
-            df = pd.DataFrame(columns=["gamePk", "period", "periodTime", "event", "team", "player", "x", "y", "strength", "is_goal"])
+            df = pd.DataFrame(columns=["gamePk","period","periodTime","event","team","player","x","y","strength","is_goal","matchup"])
             st.session_state["data_df"] = df
             st.session_state["data_dates"] = (picked if mode == "Single day" else (start_date, end_date))
             st.session_state["games_count"] = 0
@@ -501,8 +550,10 @@ else:
     games_count = st.session_state.get("games_count", 0)
     if df is None:
         df = pd.read_csv("data/curated/demo_shots.csv")
+        if "matchup" not in df.columns:
+            df["matchup"] = None
 
-# ---------- Summary ----------
+# Summary
 with left:
     st.subheader("Summary")
     total_shots = int(df.shape[0]) if not df.empty else 0
@@ -517,22 +568,29 @@ with left:
     if parser_label:
         st.caption(f"Parsed via: {parser_label}")
 
-# ---------- Filters ----------
+# Filters
 with left:
-    player_opts = ["All"] + (sorted(df["player"].dropna().unique().tolist()) if "player" in df else [])
-    team_opts = sorted([t for t in df["team"].dropna().unique().tolist()]) if "team" in df else []
+    player_opts = ["All"] + (sorted([p for p in df["player"].dropna().unique().tolist() if p and p != "Unknown"]) if "player" in df else [])
     selected_player = st.selectbox("Player", options=player_opts)
-    selected_teams = st.multiselect("Teams", options=team_opts, default=team_opts)
-    strength_opts = ["All"] + (sorted(df["strength"].dropna().unique().tolist()) if "strength" in df else [])
+
+    # Matchup filter only in single-day mode
+    matchup_opts = []
+    if isinstance(st.session_state.get("data_dates"), _date) or (mode == "Single day"):
+        if "matchup" in df and not df["matchup"].dropna().empty:
+            matchup_opts = sorted(df["matchup"].dropna().unique().tolist())
+    selected_matchups = st.multiselect("Matchup (AWAY @ HOME)", options=matchup_opts, default=matchup_opts)
+
+    strength_opts = ["All"] + (sorted([s for s in df["strength"].dropna().unique().tolist() if s]) if "strength" in df else [])
     selected_strength = st.selectbox("Game state", options=strength_opts)
+
     goals_only = st.checkbox("Show only goals", value=False)
 
 # Apply filters
 mask = pd.Series(True, index=df.index)
 if selected_player != "All" and "player" in df:
     mask &= df["player"] == selected_player
-if selected_teams and "team" in df:
-    mask &= df["team"].isin(selected_teams)
+if selected_matchups and "matchup" in df:
+    mask &= df["matchup"].isin(selected_matchups)
 if selected_strength != "All" and "strength" in df:
     mask &= df["strength"] == selected_strength
 if goals_only and "is_goal" in df:
@@ -542,22 +600,41 @@ filtered = df[mask].copy()
 
 # ---------- Plot ----------
 with right:
-    # build hover text "Player (TEAM)" for traces where lengths match
-    if not filtered.empty and {"player", "team"}.issubset(filtered.columns):
-        hover_texts = filtered.apply(lambda r: f"{r['player']} ({r['team']})", axis=1).tolist()
-    else:
-        hover_texts = None
+    import plotly.graph_objects as go
 
     fig = base_rink()
-    fig = add_shots(fig, filtered)
 
-    # Safely update hover to show only player + team
-    if hover_texts:
-        for tr in getattr(fig, "data", []):
-            if getattr(tr, "type", "") == "scatter" and hasattr(tr, "x") and len(getattr(tr, "x", [])) == len(hover_texts):
-                tr.update(text=hover_texts, hovertemplate="%{text}")
+    if not filtered.empty:
+        # Colors & hover text
+        colors = [TEAM_COLORS.get(t, "#888888") for t in filtered["team"]]
+        hover_texts = filtered.apply(lambda r: f"{r['player']} ({r['team']})", axis=1).tolist()
 
-    st.plotly_chart(fig, use_container_width=True)
+        # Separate goals vs non-goals for nicer layering
+        fg = filtered[filtered["is_goal"] == 1]
+        fs = filtered[filtered["is_goal"] != 1]
+
+        if not fs.empty:
+            fig.add_trace(go.Scatter(
+                x=fs["x"], y=fs["y"],
+                mode="markers",
+                marker=dict(color=[TEAM_COLORS.get(t, "#888888") for t in fs["team"]], size=7, opacity=0.75),
+                text=[f"{p} ({t})" for p, t in zip(fs["player"], fs["team"])],
+                hovertemplate="%{text}",
+                name="Shots"
+            ))
+        if not fg.empty:
+            fig.add_trace(go.Scatter(
+                x=fg["x"], y=fg["y"],
+                mode="markers",
+                marker=dict(color=[TEAM_COLORS.get(t, "#888888") for t in fg["team"]], size=9, opacity=0.9, symbol="star"),
+                text=[f"{p} ({t})" for p, t in zip(fg["player"], fg["team"])],
+                hovertemplate="%{text}",
+                name="Goals"
+            ))
+
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No data for the current filters.")
 
 # ---------- Export ----------
 with left:
@@ -597,6 +674,6 @@ if not filtered.empty and isinstance(st.session_state.get("data_dates"), tuple):
 
 st.caption(
     "Source: NHL Stats/GameCenter APIs • "
-    f"Rows: {len(filtered)} • Teams: {len(selected_teams) if selected_teams else 0} • "
+    f"Rows: {len(filtered)} • "
     f"Filters: player={selected_player}, strength={selected_strength}, goals_only={goals_only}"
 )
