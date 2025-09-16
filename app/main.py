@@ -619,8 +619,33 @@ with right:
 
     fig = base_rink()
 
-    # Sleek arena background (rink stays white from base_rink)
-    ARENA_BG = "#E9ECEF"  # light grey
+    # --- Rounded white rink surface under the lines ---
+    # Coordinate system matches NHL feed: x in [-100,100], y in [-42.5,42.5]
+    left, right = -100, 100
+    bottom, top = -42.5, 42.5
+
+    r = 28.0  # corner radius in "feet"
+    k = 0.5522847498  # cubic bezier kappa for a circular arc
+
+    path = (
+        f"M {left+r},{bottom} "
+        f"L {right-r},{bottom} "
+        f"C {right-r + k*r},{bottom} {right},{bottom + r - k*r} {right},{bottom + r} "
+        f"L {right},{top - r} "
+        f"C {right},{top - r + k*r} {right - r + k*r},{top} {right - r},{top} "
+        f"L {left + r},{top} "
+        f"C {left + r - k*r},{top} {left},{top - r + k*r} {left},{top - r} "
+        f"L {left},{bottom + r} "
+        f"C {left},{bottom + r - k*r} {left + r - k*r},{bottom} {left + r},{bottom} Z"
+    )
+
+    fig.add_shape(
+        type="path",
+        path=path,
+        fillcolor="white",           # rink ice
+        line=dict(width=0),
+        layer="below",               # keep all lines/marks on top
+    )
 
     fig.update_layout(
         plot_bgcolor=ARENA_BG,
