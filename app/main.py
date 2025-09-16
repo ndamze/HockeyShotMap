@@ -99,7 +99,7 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
     # 2) Convert GC plays to our rows
     for p in plays:
         ev_key = (p.get("typeDescKey") or p.get("typeCode") or "").lower()
-        if ev_key not in {"shot-on-goal", "missed-shot", "goal"}:
+        if ev_key not in GC_SHOT_EVENTS:
             continue
 
         det = p.get("details") or {}
@@ -140,7 +140,8 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
                 "period": period,
                 "periodTime": period_time,
                 "event": (
-                    "Goal" if ev_key == "goal"
+                    "Goal"
+                    if ev_key == "goal"
                     else ("Shot" if ev_key == "shot-on-goal" else "Missed Shot")
                 ),
                 "team": team,
@@ -169,56 +170,70 @@ def _shots_from_feed(feed: dict) -> pd.DataFrame:
     return df
 
 
-# ---------- Live data fetchers (cached) ----------
+# ---------- Exact-date schedule (StatsAPI preferred) ----------
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_game_pks_for_date(d: _date) -> list[int]:
     """
-    Return game PKs for the *exact* date `d`, not the whole week.
+    Return game PKs for the *exact* date `d`.
+    Prefer StatsAPI (exact date), fallback to site schedule filtered by start date.
     """
-    url = f"{SITE_BASE}/schedule/{d.isoformat()}"
-    with httpx.Client(timeout=20.0, headers={"User-Agent": "SparkerData-HockeyShotMap/1.0"}, trust_env=True) as c:
-        resp = c.get(url)
-        resp.raise_for_status()
-        sched = resp.json()
-
     wanted = d.isoformat()
-    pks: list[int] = []
 
-    def date_of(game: dict) -> str | None:
-        # Try common fields, fall back to parsing from others
-        for key in ("startTimeUTC", "startTime", "gameDate", "startTimeLocal"):
-            val = game.get(key)
-            if isinstance(val, str) and len(val) >= 10:
-                return val[:10]
-        return None
+    # Preferred: StatsAPI schedule for the exact date
+    try:
+        url = f"{STATS_BASE}/schedule?date={wanted}"
+        with httpx.Client(timeout=20.0, headers={"User-Agent": "SparkerData-HockeyShotMap/1.0"}, trust_env=True) as c:
+            r = c.get(url)
+            r.raise_for_status()
+            data = r.json()
+        pks = []
+        for day in data.get("dates", []):
+            for g in day.get("games", []):
+                pk = g.get("gamePk")
+                if pk:
+                    pks.append(int(pk))
+        if pks:
+            return sorted(set(pks))
+    except Exception:
+        pass
 
-    # Shapes seen: {"gameWeek":[{"games":[...]} ...]} OR {"games":[...]}
-    games_iter = []
-    if isinstance(sched.get("gameWeek"), list):
-        for wk in sched["gameWeek"]:
-            games_iter.extend(wk.get("games", []))
-    elif isinstance(sched.get("games"), list):
-        games_iter = sched["games"]
+    # Fallback: site schedule (sometimes returns a week) -> filter to wanted date
+    try:
+        url = f"{SITE_BASE}/schedule/{wanted}"
+        with httpx.Client(timeout=20.0, headers={"User-Agent": "SparkerData-HockeyShotMap/1.0"}, trust_env=True) as c:
+            r = c.get(url)
+            r.raise_for_status()
+            sched = r.json()
+        games_iter = []
+        if isinstance(sched.get("gameWeek"), list):
+            for wk in sched["gameWeek"]:
+                games_iter.extend(wk.get("games", []))
+        elif isinstance(sched.get("games"), list):
+            games_iter = sched["games"]
 
-    for g in games_iter:
-        gdate = date_of(g)
-        if gdate == wanted:
-            pk = g.get("id") or g.get("gamePk") or g.get("gameId")
-            if pk is not None:
-                pks.append(int(pk))
+        def date_of(game: dict) -> str | None:
+            for key in ("startTimeUTC", "startTime", "gameDate", "startTimeLocal"):
+                v = game.get(key)
+                if isinstance(v, str) and len(v) >= 10:
+                    return v[:10]
+            return None
 
-    return sorted(set(pks))
+        pks = []
+        for g in games_iter:
+            if date_of(g) == wanted:
+                pk = g.get("id") or g.get("gamePk") or g.get("gameId")
+                if pk:
+                    pks.append(int(pk))
+        return sorted(set(pks))
+    except Exception:
+        return []
 
 
-
+# ---------- Fetch shots (day / range), de-dupe & clean ----------
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
     """Return (shots_df, source_label, games_count) for a given date."""
-    try:
-        pks = fetch_game_pks_for_date(d)
-    except Exception as e:
-        return pd.DataFrame(), f"schedule error: {e}", 0
-
+    pks = fetch_game_pks_for_date(d)
     games_count = len(pks)
     if not pks:
         return pd.DataFrame(), "no games", 0
@@ -250,6 +265,16 @@ def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
         return pd.DataFrame(), "no shots", games_count
 
     shots = pd.concat(frames, ignore_index=True)
+
+    # De-dupe: some feeds overlap; build a stable key
+    if not shots.empty:
+        key_cols = ["gamePk", "period", "periodTime", "team", "player", "x", "y", "event"]
+        shots = shots.drop_duplicates(subset=[c for c in key_cols if c in shots.columns])
+
+        # Clip impossible coords (simple rink bounds)
+        shots["x"] = shots["x"].clip(-100, 100)
+        shots["y"] = shots["y"].clip(-43, 43)
+
     label = "/".join(sorted(used_sources)) if used_sources else "Unknown"
     return shots, label, games_count
 
@@ -369,9 +394,7 @@ with left:
 
 # ---------- Filters ----------
 with left:
-    # Player options from data (shooters in selected date(s) or demo)
     player_opts = ["All"] + (sorted(df["player"].dropna().unique().tolist()) if "player" in df else [])
-    # Team multiselect
     team_opts = sorted([t for t in df["team"].dropna().unique().tolist()]) if "team" in df else []
     selected_player = st.selectbox("Player", options=player_opts)
     selected_teams = st.multiselect("Teams", options=team_opts, default=team_opts)
@@ -394,8 +417,21 @@ filtered = df[mask].copy()
 
 # ---------- Plot ----------
 with right:
+    # build hover text "Player (TEAM)" for traces where lengths match
+    if not filtered.empty and {"player", "team"}.issubset(filtered.columns):
+        hover_texts = filtered.apply(lambda r: f"{r['player']} ({r['team']})", axis=1).tolist()
+    else:
+        hover_texts = None
+
     fig = base_rink()
     fig = add_shots(fig, filtered)
+
+    # Safely update hover to show only player + team
+    if hover_texts:
+        for tr in getattr(fig, "data", []):
+            if getattr(tr, "type", "") == "scatter" and hasattr(tr, "x") and len(getattr(tr, "x", [])) == len(hover_texts):
+                tr.update(text=hover_texts, hovertemplate="%{text}")
+
     st.plotly_chart(fig, use_container_width=True)
 
 # ---------- Export ----------
@@ -436,7 +472,6 @@ if not filtered.empty and isinstance(st.session_state.get("data_dates"), tuple):
 
 st.caption(
     "Source: NHL Stats/GameCenter APIs • "
-    f"Rows: {len(filtered)} • "
-    f"Teams: {len(selected_teams) if selected_teams else 0} • "
+    f"Rows: {len(filtered)} • Teams: {len(selected_teams) if selected_teams else 0} • "
     f"Filters: player={selected_player}, strength={selected_strength}, goals_only={goals_only}"
 )
