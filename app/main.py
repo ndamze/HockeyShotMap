@@ -619,12 +619,14 @@ with right:
 
     fig = base_rink()
 
-    # White ice & tidy layout
+    # Sleek arena background (rink stays white from base_rink)
+    ARENA_BG = "#E9ECEF"  # light grey
+
     fig.update_layout(
-        plot_bgcolor="white",
-        paper_bgcolor="white",
+        plot_bgcolor=ARENA_BG,
+        paper_bgcolor=ARENA_BG,
         margin=dict(l=10, r=10, t=20, b=10),
-        height=520,  # keeps main UI visible without scroll
+        height=520,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
 
