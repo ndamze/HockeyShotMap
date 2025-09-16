@@ -2,7 +2,7 @@
 
 # 🏒 NHL Shot Tracker
 
-https://hockeyshotmap-sparkerdata.streamlit.app/
+Access the Web App here: https://hockeyshotmap-sparkerdata.streamlit.app/
 
 ![screenshot](docs/screenshot.png)
 
