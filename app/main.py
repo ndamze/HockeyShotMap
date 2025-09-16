@@ -665,8 +665,14 @@ with right:
         paper_bgcolor=ARENA_BG,
         margin=dict(l=10, r=10, t=20, b=10),
         height=520,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
+        legend=dict(
+            orientation="h",
+            yanchor="bottom", y=1.02,
+            xanchor="right", x=1,
+            font=dict(color="black")  # <-- NEW: legend text color
+        ),
+    ),
+
 
     if not filtered.empty:
         # Colors & hover text (robust to missing 'team'/'strength')
