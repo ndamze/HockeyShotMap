@@ -535,6 +535,8 @@ with left:
     mode = st.radio("Mode", ["Single day", "Date range"], horizontal=True)
     preset = st.session_state.pop("_preset", None)
 
+    fetch_click = False      # <-- ensure variable always exists
+
     # --- Cache buster (correct placement) ---
     if st.button("Force refresh (clear cache)"):
         st.cache_data.clear()
