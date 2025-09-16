@@ -1,119 +1,94 @@
-# Hockey Shot Map & Player Analysis
-[![Live Demo](https://img.shields.io/badge/Streamlit-Live%20App-brightgreen)](https://hockeyshotmap.streamlit.app)
-[![Nightly Refresh](https://github.com/SparkerData/HockeyShotMap/actions/workflows/refresh.yml/badge.svg)](https://github.com/SparkerData/HockeyShotMap/actions/workflows/refresh.yml)
-![Python](https://img.shields.io/badge/python-3.11-blue.svg)
-![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+# NHL Shot Tracker
 
-Context-aware hockey shot maps and player pages – with (optional) daily data pulls. It normalizes rink coordinates, engineers features (distance, angle, rebounds, rush), and renders interactive heatmaps.
+Interactive Streamlit app for visualizing NHL shots and goals on a regulation rink. Pulls **live** and **historical** data directly from NHL endpoints (StatsAPI + GameCenter fallback), with date/range selection, matchup filtering, and exportable CSVs.
 
-**What’s different**
-- Context filters (5v5 / PP / PK / 3v3, time windows, rebound chains)
-- Goalie-centric lens (glove/blocker side splits, xGA vs actual)
-- Rink-correct normalization to a consistent right-attack frame
+![screenshot](docs/screenshot.png)
 
 ---
 
-## Quick start
+## Features
 
-```bash
-# 1) (optional) create & activate a venv
-python -m venv .venv
-# Windows
-. .venv/Scripts/activate
-# macOS/Linux
-# source .venv/bin/activate
-
-# 2) install deps
-pip install -r requirements.txt
-
-# 3) run with bundled demo data
-streamlit run app/main.py
-```
-
-Open the URL that Streamlit prints (usually http://localhost:8501).
+- **Date / Range selector** – fetch shots for a specific day or an inclusive date range
+- **Matchup filter** – focus on a single game (e.g., `CAR @ DET`)
+- **Player picker** – multi-select players (grouped by team in the UI label)
+- **Goals-only toggle** – quickly show only goals
+- **Hover metadata** – player (TEAM), `Period` + `Time` and **strength for goals** (PP/PK/5v5, etc.)
+- **Branded colors** – team-colored markers; stars for goals, circles for shots
+- **Export** – download filtered results as CSV
+- **Cache buster** – “Force refresh (clear cache)” button to avoid stale/empty cached days
 
 ---
 
-## Live data (optional)
+## Quick Start (Local)
 
-You can fetch **today’s** games (or a specific date) and plot real play-by-play shots.
+1. **Clone & enter the repo**
+   ```bash
+   git clone https://github.com/SparkerData/HockeyShotMap.git
+   cd HockeyShotMap
+   ```
 
-```bash
-# from repo root
-python -m scripts.ingest_live               # today
-python -m scripts.ingest_live --date 2024-10-10
-```
+2. **Create & activate a virtual environment (Windows PowerShell)**
+   ```powershell
+   python -m venv .venv
+   # If execution policy blocks activation, run:
+   #   Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+   .\.venv\Scripts\Activate.ps1
+   ```
 
-Then in the app, toggle **Live mode** → **Fetch live shots now**.
+3. **Install dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-**Notes**
-- The script tries NHL’s `statsapi.web.nhl.com` first and falls back to `api-web.nhle.com` parsing.
-- If you’re on Windows and see DNS issues, try switching to a public DNS temporarily or run with a specific `--date`.
-- If no data is available, the script writes a small fallback demo CSV so the app still runs.
+4. **Run the app**
+   ```bash
+   streamlit run app/main.py
+   ```
+   The app opens in your browser (usually http://localhost:8501).
 
----
-
-## Project layout
-
-```
-HockeyShotMap/
-├─ app/                 # Streamlit UI (pages, components)
-├─ src/                 # Ingestion, transforms, storage, viz
-├─ data/                # Raw/interim/curated (demo + outputs)
-├─ scripts/             # CLI tools (bootstrap, live ingest)
-├─ tests/               # Unit tests
-└─ .github/workflows/   # CI + nightly jobs
-```
+> No sample data is bundled by default in production — the app connects to the NHL APIs directly. On days with no games, the app will show an empty rink and summary. Use the **Force refresh** button if a day appears empty but you expect games.
 
 ---
 
-## Commands
+## Streamlit Cloud
 
-```bash
-# lint & tests (also run in CI)
-ruff check .
-black --check .
-pytest -q
-
-# generate a fresh synthetic demo file
-python scripts/bootstrap_season.py --season 2023
-```
+This repo is ready for Streamlit Cloud. Point it at `app/main.py`. Changes pushed to `main` will auto-redeploy. If the app shows “No data for the selected date(s.)” for an active date, click **Force refresh (clear cache)** in the sidebar and fetch again.
 
 ---
 
-## Roadmap
+## How It Works
 
-- Data
-  - [ ] Normalize attack direction per period (always attack right in plots)
-  - [ ] Rebound detection (within X seconds + same team)
-  - [ ] Rush vs settled flags (time since possession change)
-  - [ ] Strength normalization (EV ↔ 5v5, PP, PK)
-- Modeling
-  - [ ] xG-lite (distance, angle, rebound, rush, manpower, period/time)
-  - [ ] Calibrate & evaluate; persist `model.joblib`
-- App & Viz
-  - [ ] Heatmap density (hexbin/KDE toggle)
-  - [ ] Player page: rolling xG/60 + angle histogram
-  - [ ] Goalie lens: zone splits + glove/blocker sides
-  - [ ] Compare view (player vs league / last season)
-- Ops
-  - [ ] DuckDB cache (avoid re-fetching)
-  - [ ] Nightly refresh refinement (incremental by new games)
-  - [ ] Pre-commit hooks (Black, Ruff, mypy)
+- **Schedule resolution**: tries `statsapi.web.nhl.com/api/v1/schedule?date=YYYY-MM-DD`, then `startDate=endDate`, and finally `api-web.nhle.com/v1/schedule/YYYY-MM-DD` (GameCenter).  
+- **Play-by-play parsing**: prefers StatsAPI live feed (`/game/{pk}/feed/live`) and falls back to GameCenter (`/gamecenter/{pk}/play-by-play`). The parser normalizes multiple field variants for **team**, **player**, **strength**, and coordinates.  
+- **De-duplication**: drops duplicate events by key columns and clips coordinates to rink bounds.  
+- **UI**: Plotly rink with rounded corners, team-colored markers, white hover labels on dark background, black legend text.
 
 ---
 
-## Tech
+## Troubleshooting
 
-- **App**: Streamlit + Plotly
-- **Ingest**: `httpx` to NHL endpoints
-- **Processing**: pandas / numpy
-- **Storage**: DuckDB (local), Postgres optional later
-- **Quality**: Ruff, Black, mypy, pytest
-- **CI/CD**: GitHub Actions (lint + tests), nightly refresh workflow
+- **PowerShell: cannot activate venv**  
+  Run PowerShell as **Administrator** and:
+  ```powershell
+  Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+  ```
+  Then activate: `.\.venv\Scripts\Activate.ps1`
+
+- **Empty day but games existed**  
+  Click **Force refresh (clear cache)** in the sidebar and fetch again.
+
+- **Legend text color**  
+  Controlled by `fig.update_layout(legend=dict(font=dict(color="black")))`. Hover text uses `hoverlabel` settings.
+
+---
+
+## Development
+
+- Lint/format using the settings in `.pre-commit-config.yaml` (optional).
+- Run unit tests (if any) with `pytest`.
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+This project is licensed under the terms of the **MIT License** (see `LICENSE`). NHL data is © NHL and respective rights holders. This tool is for educational/analytical purposes.
