@@ -563,28 +563,6 @@ for col in REQUIRED_COLS:
     if col not in df.columns:
         df[col] = pd.NA
 
-# ---------- Compact Summary (single row) ----------
-with left:
-    st.subheader("Summary")
-    c1, c2, c3, c4, c5 = st.columns(5)
-
-    df_used = filtered if 'filtered' in locals() else df  # prefer filtered view
-
-    games_filtered = int(df_used["gamePk"].nunique()) if "gamePk" in df_used else 0
-    total_shots  = int(df_used.shape[0]) if not df_used.empty else 0
-    total_goals  = int(df_used["is_goal"].sum()) if "is_goal" in df_used else 0
-    uniq_players = df_used["player"].nunique() if "player" in df_used else 0
-    uniq_teams   = df_used["team"].nunique() if "team" in df_used else 0
-
-    c1.metric("Games",   games_filtered)
-    c2.metric("Shots",   total_shots)
-    c3.metric("Goals",   total_goals)
-    c4.metric("Players", uniq_players)
-    c5.metric("Teams",   uniq_teams)
-
-    if st.session_state.get("parser_label"):
-        st.caption(f"Parsed via: {st.session_state['parser_label']}")
-
 # ---------- Filters ----------
 with left:
     # Player multiselect grouped by team in the label (TEAM — Player)
@@ -622,6 +600,28 @@ filtered = df[mask].copy()
 for col in REQUIRED_COLS:
     if col not in filtered.columns:
         filtered[col] = pd.NA
+
+# ---------- Summary (filtered only) ----------
+with left:
+    st.subheader("Summary")
+    c1, c2, c3, c4, c5 = st.columns(5)
+
+    df_used = filtered  # always use filtered data
+
+    games_filtered = int(df_used["gamePk"].nunique()) if "gamePk" in df_used else 0
+    total_shots  = int(df_used.shape[0]) if not df_used.empty else 0
+    total_goals  = int(df_used["is_goal"].sum()) if "is_goal" in df_used else 0
+    uniq_players = df_used["player"].nunique() if "player" in df_used else 0
+    uniq_teams   = df_used["team"].nunique() if "team" in df_used else 0
+
+    c1.metric("Games",   games_filtered)
+    c2.metric("Shots",   total_shots)
+    c3.metric("Goals",   total_goals)
+    c4.metric("Players", uniq_players)
+    c5.metric("Teams",   uniq_teams)
+
+    if st.session_state.get("parser_label"):
+        st.caption(f"Parsed via: {st.session_state['parser_label']}")
 
 # ---------- Plot ----------
 with right:
