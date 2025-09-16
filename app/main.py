@@ -647,6 +647,9 @@ with right:
         layer="below",               # keep all lines/marks on top
     )
 
+    # Sleek arena background
+    ARENA_BG = "#E9ECEF"
+
     fig.update_layout(
         plot_bgcolor=ARENA_BG,
         paper_bgcolor=ARENA_BG,
@@ -655,11 +658,15 @@ with right:
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
 
-    if not filtered.empty and {"x","y"}.issubset(filtered.columns):
+    if not filtered.empty and {"x", "y"}.issubset(filtered.columns):
         # Hover text helper
         def _hover_row(r):
             base = f"{r.get('player','Unknown')} ({r.get('team','')})".strip()
-            if r.get("is_goal", 0) == 1 and isinstance(r.get("strength"), str) and r["strength"] not in (None, "", "Unknown"):
+            if (
+                r.get("is_goal", 0) == 1
+                and isinstance(r.get("strength"), str)
+                and r["strength"] not in (None, "", "Unknown")
+            ):
                 return f"{base} — {r['strength']}"
             return base
 
@@ -698,6 +705,7 @@ with right:
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("No data for the selected date(s).")
+
 
 # ---------- Export ----------
 with left:
