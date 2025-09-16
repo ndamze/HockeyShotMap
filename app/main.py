@@ -111,7 +111,26 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
             continue
 
         team = det.get("eventOwnerTeamAbbrev") or det.get("eventOwnerTeamId") or None
-        shooter = det.get("shootingPlayerName") or det.get("scoringPlayerName") or "Unknown"
+        # inside the loop over plays in _rows_from_gamecenter(...)
+        det = p.get("details") or {}
+        x, y = det.get("xCoord"), det.get("yCoord")
+        if x is None or y is None:
+            continue
+
+        team = det.get("eventOwnerTeamAbbrev") or det.get("eventOwnerTeamId") or None
+
+        # --- improved shooter name fallback ---
+        shooter = det.get("shootingPlayerName") or det.get("scoringPlayerName")
+        if not shooter:
+            plist = p.get("players") or []
+            for pl in plist:
+                # fields vary; try common ones
+                shooter = pl.get("playerName") or pl.get("fullName")
+                if shooter:
+                    break
+shooter = shooter or "Unknown"
+# --- end fallback ---
+
 
         pd_desc = p.get("periodDescriptor") or {}
         period = pd_desc.get("number")
@@ -166,25 +185,43 @@ def _shots_from_feed(feed: dict) -> pd.DataFrame:
 # ---------- Live data fetchers (cached) ----------
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_game_pks_for_date(d: _date) -> list[int]:
+    """
+    Return game PKs for the *exact* date `d`, not the whole week.
+    """
     url = f"{SITE_BASE}/schedule/{d.isoformat()}"
     with httpx.Client(timeout=20.0, headers={"User-Agent": "SparkerData-HockeyShotMap/1.0"}, trust_env=True) as c:
         resp = c.get(url)
         resp.raise_for_status()
         sched = resp.json()
 
+    wanted = d.isoformat()
     pks: list[int] = []
-    if "gameWeek" in sched:
-        for week in sched["gameWeek"]:
-            for g in week.get("games", []):
-                pk = g.get("id") or g.get("gamePk") or g.get("gameId")
-                if pk:
-                    pks.append(int(pk))
-    elif "games" in sched:
-        for g in sched["games"]:
+
+    def date_of(game: dict) -> str | None:
+        # Try common fields, fall back to parsing from others
+        for key in ("startTimeUTC", "startTime", "gameDate", "startTimeLocal"):
+            val = game.get(key)
+            if isinstance(val, str) and len(val) >= 10:
+                return val[:10]
+        return None
+
+    # Shapes seen: {"gameWeek":[{"games":[...]} ...]} OR {"games":[...]}
+    games_iter = []
+    if isinstance(sched.get("gameWeek"), list):
+        for wk in sched["gameWeek"]:
+            games_iter.extend(wk.get("games", []))
+    elif isinstance(sched.get("games"), list):
+        games_iter = sched["games"]
+
+    for g in games_iter:
+        gdate = date_of(g)
+        if gdate == wanted:
             pk = g.get("id") or g.get("gamePk") or g.get("gameId")
-            if pk:
+            if pk is not None:
                 pks.append(int(pk))
+
     return sorted(set(pks))
+
 
 
 @st.cache_data(ttl=300, show_spinner=False)
