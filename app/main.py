@@ -871,26 +871,26 @@ with right:
     )
 
     if not filtered.empty:
-    # Hover text helper: Player (TEAM) + period/time, and strength for goals
-    def _hover_row(r):
-        name = r.get("player") or "Unknown"
-        team = r.get("team") or ""
-        period = r.get("period")
-        try:
-            pnum = int(period) if pd.notna(period) else None
-        except Exception:
-            pnum = None
-        ptime = r.get("periodTime") or ""
-        when = f"P{pnum} {ptime}".strip() if pnum else ptime
-
-        label = f"{name} ({team})"
-        if when:
-            label += f"<br>{when}"
-        if int(r.get("is_goal", 0) or 0) == 1:
-            stg = r.get("strength")
-            if isinstance(stg, str) and stg and stg != "Unknown":
-                label += f" — {stg}"
-        return label
+        # Hover text helper: Player (TEAM) + period/time, and strength for goals
+        def _hover_row(r):
+            name = r.get("player") or "Unknown"
+            team = r.get("team") or ""
+            period = r.get("period")
+            try:
+                pnum = int(period) if pd.notna(period) else None
+            except Exception:
+                pnum = None
+            ptime = r.get("periodTime") or ""
+            when = f"P{pnum} {ptime}".strip() if pnum else ptime
+    
+            label = f"{name} ({team})"
+            if when:
+                label += f"<br>{when}"
+            if int(r.get("is_goal", 0) or 0) == 1:
+                stg = r.get("strength")
+                if isinstance(stg, str) and stg and stg != "Unknown":
+                    label += f" — {stg}"
+            return label
 
     # Separate goals vs non-goals
     non_goals = filtered[filtered["is_goal"] != 1] if "is_goal" in filtered else filtered
