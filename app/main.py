@@ -752,6 +752,20 @@ with right:
             layer="above",
         )
 
+    # --- Goal lines (NHL: 11 ft from end boards, 2 inches wide) ---
+    GOAL_X = 89.0                # distance from center to goal line
+    GOAL_HALF_THICK = 0.167 / 2  # ~2 in total -> ~0.0835 ft half-width
+
+    for gx in (-GOAL_X, GOAL_X):
+        fig.add_shape(
+            type="rect",
+            x0=gx - GOAL_HALF_THICK, x1=gx + GOAL_HALF_THICK,
+            y0=RINK_Y_MIN, y1=RINK_Y_MAX,
+            line=dict(width=0),
+            fillcolor="red",
+            layer="above",
+        )
+
     # --- End-zone faceoff circles (red outline) ---
     ez_r = 15.0
     ez_centers = [(-69, 22), (-69, -22), (69, 22), (69, -22)]
