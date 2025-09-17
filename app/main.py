@@ -381,14 +381,17 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
     headers = {"User-Agent": "SparkerData-HockeyShotMap/1.0"}
 
     def _pks_from_stats_json(data: dict) -> list[int]:
-        pks = []
-        for day in data.get("dates", []) or []:
-            for g in day.get("games", []) or []:
-                pk = g.get("gamePk")
-                gdate = (g.get("gameDate") or "")[:10]
-                if pk and gdate == wanted:
-                    pks.append(int(pk))
-        return pks
+    """
+    Do NOT filter by gameDate here — the schedule endpoint is already date-scoped,
+    and games near midnight UTC may show a different gameDate.
+    """
+    pks: list[int] = []
+    for day in data.get("dates", []) or []:
+        for g in day.get("games", []) or []:
+            pk = g.get("gamePk")
+            if pk:
+                pks.append(int(pk))
+    return pks
 
     # Preferred: StatsAPI ?date=
     try:
