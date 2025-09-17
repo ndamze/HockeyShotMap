@@ -376,80 +376,117 @@ def _empty_df() -> pd.DataFrame:
 
 # ---------- Exact-date schedule (robust) ----------
 @st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_game_pks_for_date(d: _date) -> list[int]:
+    """
+    Return all gamePk values for calendar date d.
+    Robust: unions StatsAPI (?date and ±1-day range) + GameCenter schedule.
+    Avoids UTC pitfalls and weird key variants (officialDate, startTimeUTC, etc).
+    """
     wanted = d.isoformat()
     headers = {"User-Agent": "SparkerData-HockeyShotMap/1.0"}
 
-    def _pks_from_stats_json(data: dict) -> list[int]:
+    # ---- Helpers
+    def _safe_str_date(v) -> str | None:
+        # accept "2025-01-13T...", or nested {"$date": "..."}
+        if isinstance(v, str) and len(v) >= 10:
+            return v[:10]
+        if isinstance(v, dict):
+            inner = v.get("$date") or v.get("date")
+            if isinstance(inner, str) and len(inner) >= 10:
+                return inner[:10]
+        return None
+
+    def _is_wanted_game(game: dict) -> bool:
+        # Check common date keys used across the two APIs
+        keys = (
+            "gameDate", "officialDate", "startTimeUTC", "startTimeLocal",
+            "gameDateISO", "gameTime", "gameDateTime"
+        )
+        for k in keys:
+            if k in game:
+                s = _safe_str_date(game.get(k))
+                if s == wanted:
+                    return True
+        # Some GameCenter "gameWeek" entries attach day at the week level
+        week_day = _safe_str_date(game.get("date"))
+        if week_day == wanted:
+            return True
+        return False
+
+    def _collect_from_stats_json(data: dict) -> list[int]:
         pks: list[int] = []
-        for day in data.get("dates", []) or []:
-            for g in day.get("games", []) or []:
+        # Prefer exact day buckets if present
+        for day in (data.get("dates") or []):
+            day_key = _safe_str_date(day.get("date"))
+            for g in (day.get("games") or []):
                 pk = g.get("gamePk")
-                if pk:
+                if not pk:
+                    continue
+                # If day_key matches, accept blindly; otherwise fall back to per-game key checks
+                if day_key == wanted or _is_wanted_game(g):
                     pks.append(int(pk))
         return pks
 
-    # Preferred: StatsAPI ?date=
+    def _collect_from_gc_sched(sched: dict) -> list[int]:
+        """
+        GameCenter schedule may return either:
+          - {"games": [...] } (already day-scoped)
+          - {"gameWeek": [{"date": "...", "games":[...]} ...]}
+        """
+        pks: list[int] = []
+
+        # Direct "games" list (filter by date keys if present)
+        for g in (sched.get("games") or []):
+            if _is_wanted_game(g):
+                pk = g.get("id") or g.get("gamePk") or g.get("gameId")
+                if pk:
+                    pks.append(int(pk))
+
+        # Weekly buckets
+        for wk in (sched.get("gameWeek") or []):
+            wk_date = _safe_str_date(wk.get("date"))
+            for g in (wk.get("games") or []):
+                if wk_date == wanted or _is_wanted_game(g):
+                    pk = g.get("id") or g.get("gamePk") or g.get("gameId")
+                    if pk:
+                        pks.append(int(pk))
+
+        return pks
+
+    # ---- Strategy: union of 3 sources
+    found: set[int] = set()
+
+    # 1) StatsAPI exact date
     try:
         url = f"{STATS_BASE}/schedule?date={wanted}"
         with httpx.Client(timeout=20.0, headers=headers, trust_env=True) as c:
             r = c.get(url); r.raise_for_status()
-            pks = _pks_from_stats_json(r.json())
-        if pks:
-            return sorted(set(pks))
+            found.update(_collect_from_stats_json(r.json()))
     except Exception:
         pass
 
-    # Fallback: StatsAPI startDate/endDate
+    # 2) StatsAPI ±1-day range (handles UTC drift / late starts)
     try:
-        url = f"{STATS_BASE}/schedule?startDate={wanted}&endDate={wanted}"
+        start = (d - timedelta(days=1)).isoformat()
+        end   = (d + timedelta(days=1)).isoformat()
+        url = f"{STATS_BASE}/schedule?startDate={start}&endDate={end}"
         with httpx.Client(timeout=20.0, headers=headers, trust_env=True) as c:
             r = c.get(url); r.raise_for_status()
-            pks = _pks_from_stats_json(r.json())
-        if pks:
-            return sorted(set(pks))
+            found.update(_collect_from_stats_json(r.json()))
     except Exception:
         pass
 
-    # GameCenter schedule fallback
+    # 3) GameCenter schedule (day)
     try:
         url = f"{SITE_BASE}/schedule/{wanted}"
         with httpx.Client(timeout=20.0, headers=headers, trust_env=True) as c:
             r = c.get(url); r.raise_for_status()
-            sched = r.json()
-
-        def _game_iter(s):
-            if isinstance(s.get("gameWeek"), list):
-                for wk in s["gameWeek"]:
-                    for g in wk.get("games", []) or []:
-                        yield g
-            for g in s.get("games", []) or []:
-                yield g
-
-        def _date_of(game: dict) -> str | None:
-            # Try common keys for date/time
-            for key in ("gameDate", "startTimeUTC", "startTime", "startTimeLocal", "gameDateISO", "gameTime"):
-                v = game.get(key)
-                if isinstance(v, str) and len(v) >= 10:
-                    return v[:10]
-            # Sometimes wrapped in nested dicts like {"startTimeUTC": {"$date": "2025-01-13T00:00:00Z"}}
-            for key in ("gameDate", "startTimeUTC", "startTime", "startTimeLocal"):
-                v = game.get(key)
-                if isinstance(v, dict):
-                    inner = v.get("$date") or v.get("date")
-                    if isinstance(inner, str) and len(inner) >= 10:
-                        return inner[:10]
-            return None
-
-        pks = []
-        for g in _game_iter(sched):
-            if _date_of(g) == wanted:
-                pk = g.get("id") or g.get("gamePk") or g.get("gameId")
-                if pk:
-                    pks.append(int(pk))
-        return sorted(set(pks))
+            found.update(_collect_from_gc_sched(r.json()))
     except Exception:
-        return []
+        pass
+
+    return sorted(found)
 
 # ---------- Fetch shots (day / range), add matchup, de-dupe & clean ----------
 @st.cache_data(ttl=300, show_spinner=False)
