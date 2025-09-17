@@ -671,7 +671,7 @@ with right:
         type="line",
         x0=0, x1=0, y0=-42.5, y1=42.5,
         line=dict(color="red", width=3),
-        layer="below"
+        layer="above"
     )
 
     # Blue lines (approx at ±75 ft from center)
@@ -680,7 +680,7 @@ with right:
             type="line",
             x0=x, x1=x, y0=-42.5, y1=42.5,
             line=dict(color="blue", width=3),
-            layer="below"
+            layer="above"
         )
 
     # --- Goal creases (semi-circles in light blue) ---
