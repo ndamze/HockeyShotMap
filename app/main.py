@@ -756,8 +756,8 @@ with right:
     GOAL_X = 89.0
     GOAL_HALF_THICK = 0.167 / 2  # ~2 in
 
-    # Instead of clipping at 14.5 ft, allow up to ~34 ft
-    GOAL_Y_EXTENT = 34.0
+    # Instead of clipping at 14.5 ft, allow up to ~36 ft
+    GOAL_Y_EXTENT = 36.0
 
     for gx in (-GOAL_X, GOAL_X):
         fig.add_shape(
