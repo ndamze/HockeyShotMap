@@ -8,13 +8,12 @@ from io import StringIO
 import numpy as np
 import plotly.graph_objects as go
 
-
 # ---- Rink plot import with dual-path fallback ----
 try:
     from app.components.rink_plot import base_rink  # when running from repo root
 except ModuleNotFoundError:
     try:
-        from components.rink_plot import base_rink      # when running inside app/
+        from components.rink_plot import base_rink  # when running inside app/
     except ModuleNotFoundError:
         st.error("Could not import rink_plot component. Please ensure the components directory exists.")
         st.stop()
@@ -204,8 +203,10 @@ def _gc_roster_map(feed: dict) -> dict[int, str]:
 
 def _infer_strength_from_skaters(det: dict, owner_team_id: int | None, home_id: int | None, away_id: int | None) -> str:
     def _to_int(v):
-        try: return int(v)
-        except (TypeError, ValueError): return None
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
     hs = _to_int(det.get("homeSkaters"))
     as_ = _to_int(det.get("awaySkaters"))
     if hs is None or as_ is None:
@@ -216,7 +217,8 @@ def _infer_strength_from_skaters(det: dict, owner_team_id: int | None, home_id: 
             if ch.isdigit():
                 cur += ch
             elif cur:
-                nums.append(int(cur)); cur = ""
+                nums.append(int(cur))
+                cur = ""
         if cur:
             nums.append(int(cur))
         if len(nums) == 2:
@@ -234,8 +236,10 @@ def _infer_strength_from_skaters(det: dict, owner_team_id: int | None, home_id: 
         if owner_skaters < other_skaters:
             return "PK"
         return "EV"
-    if hs > as_: return "PP"
-    if as_ > hs: return "PK"
+    if hs > as_:
+        return "PP"
+    if as_ > hs:
+        return "PK"
     return "EV"
 
 def _rows_from_gamecenter(feed: dict) -> list[dict]:
@@ -244,12 +248,15 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
     # plays normalization
     plays_root = feed.get("plays", [])
     plays: list[dict] = []
+
     def extend_from_candidate(cand):
         nonlocal plays
-        if cand is None: return
+        if cand is None:
+            return
         if isinstance(cand, list):
             if cand and isinstance(cand[0], dict) and "plays" in cand[0]:
-                for block in cand: plays.extend(block.get("plays") or [])
+                for block in cand:
+                    plays.extend(block.get("plays") or [])
             else:
                 plays.extend(cand)
         elif isinstance(cand, dict):
@@ -292,7 +299,8 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
                 if role in {"shooter", "scorer"}:
                     shooter = (_norm_name_value(pl.get("playerName")) or
                                _full_name(pl.get("firstName"), pl.get("lastName")))
-                    if shooter: break
+                    if shooter:
+                        break
         if not shooter:
             pid = det.get("shootingPlayerId") or det.get("scoringPlayerId") or det.get("playerId")
             if pid is not None:
@@ -300,7 +308,8 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
                     if pl.get("playerId") == pid:
                         shooter = (_norm_name_value(pl.get("playerName")) or
                                    _full_name(pl.get("firstName"), pl.get("lastName")))
-                        if shooter: break
+                        if shooter:
+                            break
                 if not shooter:
                     shooter = roster.get(pid)
         shooter = shooter or "Unknown"
@@ -332,12 +341,14 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
     return rows
 
 def _matchup_from_gamecenter(feed: dict) -> str | None:
-    def _abbr(d, keys=("abbrev","triCode","abbreviation")):
+    def _abbr(d, keys=("abbrev", "triCode", "abbreviation")):
         if isinstance(d, dict):
             for k in keys:
                 v = d.get(k)
-                if isinstance(v, str) and v: return v
+                if isinstance(v, str) and v:
+                    return v
         return None
+
     home = _abbr(feed.get("homeTeam")) or _abbr((feed.get("teams") or {}).get("home"))
     away = _abbr(feed.get("awayTeam")) or _abbr((feed.get("teams") or {}).get("away"))
     if home and away:
@@ -379,15 +390,15 @@ def _empty_df() -> pd.DataFrame:
 def fetch_game_pks_for_date(d: _date) -> list[int]:
     """
     Return all gamePk values for calendar date d.
-    Strategy:
-      1) GameCenter day endpoint FIRST: if it returns a 'games' list, accept ALL IDs (already day-scoped).
-      2) GameCenter weekly buckets fallback (filter by week date or per-game date-ish keys).
-      3) StatsAPI union: ?date=YYYY-MM-DD and ±1 day range to catch UTC drift.
+    Robust: unions StatsAPI (?date and ±1-day range) + GameCenter schedule.
+    Avoids UTC pitfalls and weird key variants (officialDate, startTimeUTC, etc).
     """
     wanted = d.isoformat()
     headers = {"User-Agent": "SparkerData-HockeyShotMap/1.0"}
 
+    # ---- Helpers
     def _safe_str_date(v) -> str | None:
+        # accept "2025-01-13T...", or nested {"$date": "..."}
         if isinstance(v, str) and len(v) >= 10:
             return v[:10]
         if isinstance(v, dict):
@@ -397,45 +408,52 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
         return None
 
     def _is_wanted_game(game: dict) -> bool:
-        keys = ("gameDate", "officialDate", "startTimeUTC", "startTimeLocal",
-                "gameDateISO", "gameTime", "gameDateTime")
+        # Check common date keys used across the two APIs
+        keys = (
+            "gameDate", "officialDate", "startTimeUTC", "startTimeLocal",
+            "gameDateISO", "gameTime", "gameDateTime"
+        )
         for k in keys:
             if k in game:
                 s = _safe_str_date(game.get(k))
                 if s == wanted:
                     return True
-        wk = _safe_str_date(game.get("date"))
-        return wk == wanted
+        # Some GameCenter "gameWeek" entries attach day at the week level
+        week_day = _safe_str_date(game.get("date"))
+        if week_day == wanted:
+            return True
+        return False
 
     def _collect_from_stats_json(data: dict) -> list[int]:
         pks: list[int] = []
+        # Prefer exact day buckets if present
         for day in (data.get("dates") or []):
             day_key = _safe_str_date(day.get("date"))
             for g in (day.get("games") or []):
                 pk = g.get("gamePk")
                 if not pk:
                     continue
+                # If day_key matches, accept blindly; otherwise fall back to per-game key checks
                 if day_key == wanted or _is_wanted_game(g):
                     pks.append(int(pk))
         return pks
 
-    def _collect_from_gc_sched_strict(sched: dict) -> list[int]:
+    def _collect_from_gc_sched(sched: dict) -> list[int]:
         """
-        GameCenter schedule resolver:
-          - If 'games' exists at top-level (day endpoint), accept ALL IDs (already scoped by URL).
-          - Else if 'gameWeek' exists, filter by week 'date' or per-game date-ish keys.
+        GameCenter schedule may return either:
+          - {"games": [...] } (already day-scoped)
+          - {"gameWeek": [{"date": "...", "games":[...]} ...]}
         """
         pks: list[int] = []
 
-        # Day endpoint: most reliable for odd dates (e.g., 2025-01-13)
-        if isinstance(sched.get("games"), list) and sched["games"]:
-            for g in sched["games"]:
+        # Direct "games" list (filter by date keys if present)
+        for g in (sched.get("games") or []):
+            if _is_wanted_game(g):
                 pk = g.get("id") or g.get("gamePk") or g.get("gameId")
                 if pk:
                     pks.append(int(pk))
-            return pks  # early return — accept day scope as authoritative
 
-        # Weekly buckets fallback
+        # Weekly buckets
         for wk in (sched.get("gameWeek") or []):
             wk_date = _safe_str_date(wk.get("date"))
             for g in (wk.get("games") or []):
@@ -443,36 +461,41 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
                     pk = g.get("id") or g.get("gamePk") or g.get("gameId")
                     if pk:
                         pks.append(int(pk))
+
         return pks
 
+    # ---- Strategy: union of 3 sources
     found: set[int] = set()
 
-    # 1) GameCenter day FIRST — accept all if it exposes 'games'
-    try:
-        url = f"{SITE_BASE}/schedule/{wanted}"
-        with httpx.Client(timeout=20.0, headers=headers, trust_env=True) as c:
-            r = c.get(url); r.raise_for_status()
-            found.update(_collect_from_gc_sched_strict(r.json()))
-    except Exception:
-        pass
-
-    # 2) StatsAPI exact date
+    # 1) StatsAPI exact date
     try:
         url = f"{STATS_BASE}/schedule?date={wanted}"
         with httpx.Client(timeout=20.0, headers=headers, trust_env=True) as c:
-            r = c.get(url); r.raise_for_status()
+            r = c.get(url)
+            r.raise_for_status()
             found.update(_collect_from_stats_json(r.json()))
     except Exception:
         pass
 
-    # 3) StatsAPI ±1 day (UTC drift)
+    # 2) StatsAPI ±1-day range (handles UTC drift / late starts)
     try:
         start = (d - timedelta(days=1)).isoformat()
-        end   = (d + timedelta(days=1)).isoformat()
+        end = (d + timedelta(days=1)).isoformat()
         url = f"{STATS_BASE}/schedule?startDate={start}&endDate={end}"
         with httpx.Client(timeout=20.0, headers=headers, trust_env=True) as c:
-            r = c.get(url); r.raise_for_status()
+            r = c.get(url)
+            r.raise_for_status()
             found.update(_collect_from_stats_json(r.json()))
+    except Exception:
+        pass
+
+    # 3) GameCenter schedule (day)
+    try:
+        url = f"{SITE_BASE}/schedule/{wanted}"
+        with httpx.Client(timeout=20.0, headers=headers, trust_env=True) as c:
+            r = c.get(url)
+            r.raise_for_status()
+            found.update(_collect_from_gc_sched(r.json()))
     except Exception:
         pass
 
@@ -494,19 +517,23 @@ def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
         for pk in pks:
             feed = None
             try:
-                r = c.get(f"{STATS_BASE}/game/{pk}/feed/live"); r.raise_for_status(); feed = r.json()
+                r = c.get(f"{STATS_BASE}/game/{pk}/feed/live")
+                r.raise_for_status()
+                feed = r.json()
             except Exception:
                 try:
-                    r = c.get(f"{SITE_BASE}/gamecenter/{pk}/play-by-play"); r.raise_for_status(); feed = r.json()
+                    r = c.get(f"{SITE_BASE}/gamecenter/{pk}/play-by-play")
+                    r.raise_for_status()
+                    feed = r.json()
                 except Exception:
                     feed = None
             if not feed:
                 continue
-            df, source, matchup = _shots_from_feed(feed)
+            df_part, source, matchup = _shots_from_feed(feed)
             if matchup:
                 matchup_map[int(pk)] = matchup
-            if not df.empty:
-                frames.append(df.assign(gamePk=int(pk)))
+            if not df_part.empty:
+                frames.append(df_part.assign(gamePk=int(pk)))
                 used_sources.add(source)
 
     if not frames:
@@ -578,9 +605,9 @@ with left:
     mode = st.radio("Mode", ["Single day", "Date range"], horizontal=True)
     preset = st.session_state.pop("_preset", None)
 
-    fetch_click = False      # <-- ensure variable always exists
+    fetch_click = False  # ensure variable always exists
 
-    # --- Cache buster (correct placement) ---
+    # --- Cache buster ---
     if st.button("Force refresh (clear cache)"):
         st.cache_data.clear()
         st.rerun()
@@ -682,16 +709,16 @@ with left:
     df_used = filtered  # always use filtered data
 
     games_filtered = int(df_used["gamePk"].nunique()) if "gamePk" in df_used else 0
-    total_shots  = int(df_used.shape[0]) if not df_used.empty else 0
-    total_goals  = int(df_used["is_goal"].sum()) if "is_goal" in df_used else 0
+    total_shots = int(df_used.shape[0]) if not df_used.empty else 0
+    total_goals = int(df_used["is_goal"].sum()) if "is_goal" in df_used else 0
     uniq_players = df_used["player"].nunique() if "player" in df_used else 0
-    uniq_teams   = df_used["team"].nunique() if "team" in df_used else 0
+    uniq_teams = df_used["team"].nunique() if "team" in df_used else 0
 
-    c1.metric("Games",   games_filtered)
-    c2.metric("Shots",   total_shots)
-    c3.metric("Goals",   total_goals)
+    c1.metric("Games", games_filtered)
+    c2.metric("Shots", total_shots)
+    c3.metric("Goals", total_goals)
     c4.metric("Players", uniq_players)
-    c5.metric("Teams",   uniq_teams)
+    c5.metric("Teams", uniq_teams)
 
     if st.session_state.get("parser_label"):
         st.caption(f"Parsed via: {st.session_state['parser_label']}")
@@ -798,23 +825,23 @@ with right:
         )
 
     for cx, cy in ez_centers:
-        left_x  = cx - ez_r - OUT_OFFSET
+        left_x = cx - ez_r - OUT_OFFSET
         right_x = cx + ez_r + OUT_OFFSET
         for side_x in (left_x, right_x):
-            _add_hash(side_x, cy - GAP - HASH_LEN/2, side_x, cy - GAP + HASH_LEN/2, "red")
-            _add_hash(side_x, cy + GAP - HASH_LEN/2, side_x, cy + GAP + HASH_LEN/2, "red")
+            _add_hash(side_x, cy - GAP - HASH_LEN / 2, side_x, cy - GAP + HASH_LEN / 2, "red")
+            _add_hash(side_x, cy + GAP - HASH_LEN / 2, side_x, cy + GAP + HASH_LEN / 2, "red")
 
     # Neutral-zone: short horizontal blue marks left/right of each dot (above & below the dot)
     NZ_HASH_OFFSET = 4.0  # ft from dot center along x
     for cx, cy in nz_spots:
         for sx in (-NZ_HASH_OFFSET, NZ_HASH_OFFSET):
-            _add_hash(cx + sx - HASH_LEN/2, cy - GAP, cx + sx + HASH_LEN/2, cy - GAP, "blue")
-            _add_hash(cx + sx - HASH_LEN/2, cy + GAP, cx + sx + HASH_LEN/2, cy + GAP, "blue")
+            _add_hash(cx + sx - HASH_LEN / 2, cy - GAP, cx + sx + HASH_LEN / 2, cy - GAP, "blue")
+            _add_hash(cx + sx - HASH_LEN / 2, cy + GAP, cx + sx + HASH_LEN / 2, cy + GAP, "blue")
 
     # --- Goal creases (semi-circles; darker) ---
     crease_radius = 6
     crease_color = "rgba(25, 118, 210, 0.55)"  # darker blue
-    theta = np.linspace(-np.pi/2, np.pi/2, 50)
+    theta = np.linspace(-np.pi / 2, np.pi / 2, 50)
 
     # Left crease (goal near x = -89 ft)
     x_left = -89 + crease_radius * np.cos(theta)
@@ -865,13 +892,16 @@ with right:
     fig.update_layout(
         plot_bgcolor=ARENA_BG, paper_bgcolor=ARENA_BG,
         margin=dict(l=10, r=10, t=20, b=10), height=520,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-                    font=dict(color="black"), bgcolor="rgba(0,0,0,0)", borderwidth=0),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+            font=dict(color="black"), bgcolor="rgba(0,0,0,0)", borderwidth=0
+        ),
         hoverlabel=dict(font=dict(color="white"), bgcolor="rgba(0,0,0,0.7)"),
     )
 
+    # ---- Scatter data & render ----
     if not filtered.empty:
-        # Hover text helper: Player (TEAM) + period/time, and strength for goals
+        # Hover text helper
         def _hover_row(r):
             name = r.get("player") or "Unknown"
             team = r.get("team") or ""
@@ -882,7 +912,7 @@ with right:
                 pnum = None
             ptime = r.get("periodTime") or ""
             when = f"P{pnum} {ptime}".strip() if pnum else ptime
-    
+
             label = f"{name} ({team})"
             if when:
                 label += f"<br>{when}"
@@ -892,45 +922,45 @@ with right:
                     label += f" — {stg}"
             return label
 
-    # Separate goals vs non-goals
-    non_goals = filtered[filtered["is_goal"] != 1] if "is_goal" in filtered else filtered
-    goals = filtered[filtered["is_goal"] == 1] if "is_goal" in filtered else filtered.iloc[0:0]
+        # Separate goals vs non-goals
+        non_goals = filtered[filtered["is_goal"] != 1] if "is_goal" in filtered else filtered
+        goals = filtered[filtered["is_goal"] == 1] if "is_goal" in filtered else filtered.iloc[0:0]
 
-    if not non_goals.empty:
-        fig.add_trace(go.Scatter(
-            x=non_goals.get("x", []), y=non_goals.get("y", []),
-            mode="markers",
-            marker=dict(
-                color=[TEAM_COLORS.get(t, "#888888")
-                       for t in non_goals.get("team", pd.Series([""]*len(non_goals))).fillna("")],
-                size=7, opacity=0.8,
-                line=dict(color="black", width=0.8),
-            ),
-            text=[_hover_row(r) for _, r in non_goals.iterrows()],
-            hovertemplate="%{text}<extra></extra>",
-            name="Shots",
-        ))
+        if not non_goals.empty:
+            fig.add_trace(go.Scatter(
+                x=non_goals.get("x", []), y=non_goals.get("y", []),
+                mode="markers",
+                marker=dict(
+                    color=[TEAM_COLORS.get(t, "#888888")
+                           for t in non_goals.get("team", pd.Series([""] * len(non_goals))).fillna("")],
+                    size=7, opacity=0.8,
+                    line=dict(color="black", width=0.8),
+                ),
+                text=[_hover_row(r) for _, r in non_goals.iterrows()],
+                hovertemplate="%{text}<extra></extra>",
+                name="Shots",
+            ))
 
-    if not goals.empty:
-        fig.add_trace(go.Scatter(
-            x=goals.get("x", []), y=goals.get("y", []),
-            mode="markers",
-            marker=dict(
-                color=[TEAM_COLORS.get(t, "#888888")
-                       for t in goals.get("team", pd.Series([""]*len(goals))).fillna("")],
-                size=9, opacity=0.95, symbol="star",
-                line=dict(color="black", width=1.0),
-            ),
-            text=[_hover_row(r) for _, r in goals.iterrows()],
-            hovertemplate="%{text}<extra></extra>",
-            name="Goals",
-        ))
+        if not goals.empty:
+            fig.add_trace(go.Scatter(
+                x=goals.get("x", []), y=goals.get("y", []),
+                mode="markers",
+                marker=dict(
+                    color=[TEAM_COLORS.get(t, "#888888")
+                           for t in goals.get("team", pd.Series([""] * len(goals))).fillna("")],
+                    size=9, opacity=0.95, symbol="star",
+                    line=dict(color="black", width=1.0),
+                ),
+                text=[_hover_row(r) for _, r in goals.iterrows()],
+                hovertemplate="%{text}<extra></extra>",
+                name="Goals",
+            ))
 
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    # Still show the rink even if there’s no data
-    st.plotly_chart(fig, use_container_width=True)
-    st.info("No data for the selected date(s).")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        # Still show the rink even if there’s no data
+        st.plotly_chart(fig, use_container_width=True)
+        st.info("No data for the selected date(s).")
 
 # ---------- Export ----------
 with left:
