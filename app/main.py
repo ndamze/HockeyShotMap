@@ -700,10 +700,10 @@ with left:
 with right:
     fig = base_rink()
 
-    # --- Accurate NHL center and blue lines (1 ft wide) ---
+    # --- Accurate NHL center line + blue lines (1 ft wide) ---
     RINK_Y_MIN, RINK_Y_MAX = -42.5, 42.5
-    LINE_HALF_FT = 0.5  # 1 ft total width
-    
+    LINE_HALF_FT = 0.5  # 1 ft total
+
     # Center red line: x in [-0.5, 0.5]
     fig.add_shape(
         type="rect",
@@ -713,12 +713,9 @@ with right:
         fillcolor="red",
         layer="above",
     )
-    
+
     # Blue lines: inside edges at ±25 ft, 1 ft thick -> [-26,-25] and [25,26]
-    BLUE_INNER = 25.0
-    BLUE_OUTER = BLUE_INNER + 1.0
-    
-    for x0, x1 in [(-BLUE_OUTER, -BLUE_INNER), (BLUE_INNER, BLUE_OUTER)]:
+    for x0, x1 in [(-26.0, -25.0), (25.0, 26.0)]:
         fig.add_shape(
             type="rect",
             x0=x0, x1=x1,
@@ -728,173 +725,29 @@ with right:
             layer="above",
         )
 
-    # End-zone faceoff circles (red outline)
-    # Standard approx: centers at x = ±69, y = ±22; radius ≈ 15 ft
-    circle_r = 15.0
-    circle_centers = [(-69, 22), (-69, -22), (69, 22), (69, -22)]
-    for cx, cy in circle_centers:
+    # --- End-zone faceoff circles (red outline) ---
+    ez_r = 15.0
+    ez_centers = [(-69, 22), (-69, -22), (69, 22), (69, -22)]
+    for cx, cy in ez_centers:
         fig.add_shape(
             type="circle",
-            x0=cx - circle_r, x1=cx + circle_r,
-            y0=cy - circle_r, y1=cy + circle_r,
+            x0=cx - ez_r, x1=cx + ez_r,
+            y0=cy - ez_r, y1=cy + ez_r,
             line=dict(color="red", width=2),
             fillcolor="rgba(0,0,0,0)",
-            layer="above"
+            layer="above",
         )
 
-    # Neutral zone faceoff circles (red outline, no fill)
-    # Centers at x = ±20, y = ±22; radius ≈ 15 ft
-    nz_circle_r = 15.0
-    nz_circle_centers = [(-20, 22), (-20, -22), (20, 22), (20, -22)]
-    for cx, cy in nz_circle_centers:
+    # --- Faceoff dots (end-zone = red, neutral-zone = blue, center-ice = blue) ---
+    DOT_R = 1.0  # ~2 ft diameter
+
+    # End-zone red dots (at the circle centers)
+    for cx, cy in ez_centers:
         fig.add_shape(
             type="circle",
-            x0=cx - nz_circle_r, x1=cx + nz_circle_r,
-            y0=cy - nz_circle_r, y1=cy + nz_circle_r,
-            line=dict(color="red", width=2),
-            fillcolor="rgba(0,0,0,0)",
-            layer="above"
-        )
-
-    # --- Goal creases (semi-circles; darker) ---
-    crease_radius = 6
-    crease_color = "rgba(25, 118, 210, 0.55)"  # darker blue
-
-    # Half-circle from -90° to +90° (forward-facing)
-    theta = np.linspace(-np.pi/2, np.pi/2, 50)
-
-    # Left crease (goal near x = -89 ft)
-    x_left = -89 + crease_radius * np.cos(theta)
-    y_left = 0 + crease_radius * np.sin(theta)
-    fig.add_trace(go.Scatter(
-        x=x_left, y=y_left,
-        fill="toself", mode="lines",
-        line=dict(color="rgba(0,0,0,0)"),
-        fillcolor=crease_color,
-        showlegend=False,
-        hoverinfo="skip",
-        opacity=0.7,  # more opaque
-    ))
-
-    # Right crease (goal near x = +89 ft) — mirror the arc
-    x_right = 89 - crease_radius * np.cos(theta)
-    y_right = 0 + crease_radius * np.sin(theta)
-    fig.add_trace(go.Scatter(
-        x=x_right, y=y_right,
-        fill="toself", mode="lines",
-        line=dict(color="rgba(0,0,0,0)"),
-        fillcolor=crease_color,
-        showlegend=False,
-        hoverinfo="skip",
-        opacity=0.7,  # more opaque
-    ))
-
-    # --- Rounded white rink surface under the lines ---
-    # Coordinate system matches NHL feed: x in [-100,100], y in [-42.5,42.5]
-    left_x, right_x = -100, 100
-    bottom_y, top_y = -42.5, 42.5
-
-    r = 28.0  # corner radius in "feet"
-    k = 0.5522847498  # cubic bezier kappa for a circular arc
-
-    path = (
-        f"M {left_x+r},{bottom_y} "
-        f"L {right_x-r},{bottom_y} "
-        f"C {right_x-r + k*r},{bottom_y} {right_x},{bottom_y + r - k*r} {right_x},{bottom_y + r} "
-        f"L {right_x},{top_y - r} "
-        f"C {right_x},{top_y - r + k*r} {right_x - r + k*r},{top_y} {right_x - r},{top_y} "
-        f"L {left_x + r},{top_y} "
-        f"C {left_x + r - k*r},{top_y} {left_x},{top_y - r + k*r} {left_x},{top_y - r} "
-        f"L {left_x},{bottom_y + r} "
-        f"C {left_x},{bottom_y + r - k*r} {left_x + r - k*r},{bottom_y} {left_x + r},{bottom_y} Z"
-    )
-
-    fig.add_shape(
-        type="path",
-        path=path,
-        fillcolor="white",           # rink ice
-        line=dict(width=0),
-        layer="below",               # keep all lines/marks on top
-    )
-
-    # Sleek arena background
-    ARENA_BG = "#E9ECEF"
-
-    fig.update_layout(
-        plot_bgcolor=ARENA_BG,
-        paper_bgcolor=ARENA_BG,
-        margin=dict(l=10, r=10, t=20, b=10),
-        height=520,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom", y=1.02,
-            xanchor="right", x=1,
-            font=dict(color="black"),
-            bgcolor="rgba(0,0,0,0)",
-            borderwidth=0
-        ),
-        hoverlabel=dict(font=dict(color="white"), bgcolor="rgba(0,0,0,0.7)"),
-    )
-
-    if not filtered.empty:
-        # Hover text helper: Player (TEAM) + period/time, and strength for goals
-        def _hover_row(r):
-            name = r.get("player") or "Unknown"
-            team = r.get("team") or ""
-            period = r.get("period")
-            try:
-                pnum = int(period) if pd.notna(period) else None
-            except Exception:
-                pnum = None
-            ptime = r.get("periodTime") or ""
-            when = f"P{pnum} {ptime}".strip() if pnum else ptime
-
-            label = f"{name} ({team})"
-            if when:
-                label += f"<br>{when}"
-            if int(r.get("is_goal", 0) or 0) == 1:
-                stg = r.get("strength")
-                if isinstance(stg, str) and stg and stg != "Unknown":
-                    label += f" — {stg}"
-            return label
-
-        # Separate goals vs non-goals for nicer layering
-        non_goals = filtered[filtered["is_goal"] != 1] if "is_goal" in filtered else filtered
-        goals = filtered[filtered["is_goal"] == 1] if "is_goal" in filtered else filtered.iloc[0:0]
-
-        if not non_goals.empty:
-            fig.add_trace(go.Scatter(
-                x=non_goals.get("x", []), y=non_goals.get("y", []),
-                mode="markers",
-                marker=dict(
-                    color=[TEAM_COLORS.get(t, "#888888")
-                           for t in non_goals.get("team", pd.Series([""]*len(non_goals))).fillna("")],
-                    size=7, opacity=0.8,
-                    line=dict(color="black", width=0.8),
-                ),
-                text=[_hover_row(r) for _, r in non_goals.iterrows()],
-                hovertemplate="%{text}<extra></extra>",
-                name="Shots",
-            ))
-
-        if not goals.empty:
-            fig.add_trace(go.Scatter(
-                x=goals.get("x", []), y=goals.get("y", []),
-                mode="markers",
-                marker=dict(
-                    color=[TEAM_COLORS.get(t, "#888888")
-                           for t in goals.get("team", pd.Series([""]*len(goals))).fillna("")],
-                    size=9, opacity=0.95, symbol="star",
-                    line=dict(color="black", width=1.0),
-                ),
-                text=[_hover_row(r) for _, r in goals.iterrows()],
-                hovertemplate="%{text}<extra></extra>",
-                name="Goals",
-            ))
-
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No data for the selected date(s).")
+            x0=cx - DOT_R, x1=cx + DOT_R,
+            y0=cy - DOT_R, y1=cy + DOT_R,
+            line=dict(wi
 
 # ---------- Export ----------
 with left:
