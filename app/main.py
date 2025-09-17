@@ -385,8 +385,7 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
         for day in data.get("dates", []) or []:
             for g in day.get("games", []) or []:
                 pk = g.get("gamePk")
-                gdate = (g.get("gameDate") or "")[:10]
-                if pk and gdate == wanted:
+                if pk:
                     pks.append(int(pk))
         return pks
 
@@ -436,17 +435,14 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
 
         pks = []
         for g in _game_iter(sched):
-            if _date_of(g) == wanted:
-                pk = g.get("id") or g.get("gamePk") or g.get("gameId")
-                if pk:
-                    pks.append(int(pk))
+            pk = g.get("id") or g.get("gamePk") or g.get("gameId")
+            if pk:
+                pks.append(int(pk))
         return sorted(set(pks))
     except Exception:
         return []
 
-# ---------- Fetch shots (day / range), add matchup, de-dupe & clean ----------
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
+#def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
     pks = fetch_game_pks_for_date(d)
     games_count = len(pks)
     if not pks:
