@@ -742,6 +742,20 @@ with right:
             layer="above"
         )
 
+    # Neutral zone faceoff circles (red outline, no fill)
+    # Centers at x = ±20, y = ±22; radius ≈ 15 ft
+    nz_circle_r = 15.0
+    nz_circle_centers = [(-20, 22), (-20, -22), (20, 22), (20, -22)]
+    for cx, cy in nz_circle_centers:
+        fig.add_shape(
+            type="circle",
+            x0=cx - nz_circle_r, x1=cx + nz_circle_r,
+            y0=cy - nz_circle_r, y1=cy + nz_circle_r,
+            line=dict(color="red", width=2),
+            fillcolor="rgba(0,0,0,0)",
+            layer="above"
+        )
+
     # --- Goal creases (semi-circles; darker) ---
     crease_radius = 6
     crease_color = "rgba(25, 118, 210, 0.55)"  # darker blue
