@@ -607,6 +607,27 @@ with left:
 
     fetch_click = False  # ensure variable always exists
 
+    # --- Cache buster ---
+    if st.button("Force refresh (clear cache)"):
+        st.cache_data.clear()
+        st.rerun()
+
+    if mode == "Single day":
+        default = preset[1] if preset and preset[0] == "single" else _date.today()
+        picked = st.date_input("Date", value=default, max_value=_date.today())
+        fetch_click = st.button("Retrieve Data")
+    else:
+        if preset and preset[0] == "range":
+            default_start, default_end = preset[1], preset[2]
+        else:
+            default_start, default_end = _date.today(), _date.today()
+        picked_range = st.date_input("Date range", value=(default_start, default_end), max_value=_date.today())
+        if isinstance(picked_range, tuple) and len(picked_range) == 2:
+            start_date, end_date = picked_range
+        else:
+            start_date, end_date = _date.today(), _date.today()
+        fetch_click = st.button("Retrieve Data")
+
 # --- Session state bootstrapping (API-only; default = today) ---
 if "initialized" not in st.session_state:
     st.session_state["initialized"] = True
@@ -679,27 +700,6 @@ filtered = df[mask].copy()
 for col in REQUIRED_COLS:
     if col not in filtered.columns:
         filtered[col] = pd.NA
-
-# --- Cache buster ---
-    if st.button("Force refresh (clear cache)"):
-        st.cache_data.clear()
-        st.rerun()
-
-    if mode == "Single day":
-        default = preset[1] if preset and preset[0] == "single" else _date.today()
-        picked = st.date_input("Date", value=default, max_value=_date.today())
-        fetch_click = st.button("Retrieve Data")
-    else:
-        if preset and preset[0] == "range":
-            default_start, default_end = preset[1], preset[2]
-        else:
-            default_start, default_end = _date.today(), _date.today()
-        picked_range = st.date_input("Date range", value=(default_start, default_end), max_value=_date.today())
-        if isinstance(picked_range, tuple) and len(picked_range) == 2:
-            start_date, end_date = picked_range
-        else:
-            start_date, end_date = _date.today(), _date.today()
-        fetch_click = st.button("Retrieve Data")
 
 # ---------- Summary (filtered only) ----------
 with left:
