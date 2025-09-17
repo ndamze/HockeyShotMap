@@ -747,7 +747,133 @@ with right:
             type="circle",
             x0=cx - DOT_R, x1=cx + DOT_R,
             y0=cy - DOT_R, y1=cy + DOT_R,
-            line=dict(wi
+            line=dict(width=0),
+            fillcolor="red",
+            layer="above",
+        )
+
+    # Neutral-zone blue dots (NO circles in NHL spec)
+    nz_spots = [(-20, 22), (-20, -22), (20, 22), (20, -22)]
+    for cx, cy in nz_spots:
+        fig.add_shape(
+            type="circle",
+            x0=cx - DOT_R, x1=cx + DOT_R,
+            y0=cy - DOT_R, y1=cy + DOT_R,
+            line=dict(width=0),
+            fillcolor="blue",
+            layer="above",
+        )
+
+    # Center-ice big blue circle + blue dot
+    center_r = 15.0
+    fig.add_shape(
+        type="circle",
+        x0=-center_r, x1=center_r,
+        y0=-center_r, y1=center_r,
+        line=dict(color="blue", width=2),
+        fillcolor="rgba(0,0,0,0)",
+        layer="above",
+    )
+    fig.add_shape(
+        type="circle",
+        x0=-DOT_R, x1=DOT_R,
+        y0=-DOT_R, y1=DOT_R,
+        line=dict(width=0),
+        fillcolor="blue",
+        layer="above",
+    )
+
+    # --- Hash marks ---
+    # End-zone: two short vertical red marks just outside each circle, above & below centerline.
+    HASH_LEN = 2.0   # ft
+    GAP = 1.5        # ft vertical offset from circle center
+    OUT_OFFSET = 1.0 # ft outside circle edge
+
+    def _add_hash(x0, y0, x1, y1, color):
+        fig.add_shape(
+            type="line",
+            x0=x0, y0=y0, x1=x1, y1=y1,
+            line=dict(color=color, width=2),
+            layer="above",
+        )
+
+    for cx, cy in ez_centers:
+        left_x  = cx - ez_r - OUT_OFFSET
+        right_x = cx + ez_r + OUT_OFFSET
+        for side_x in (left_x, right_x):
+            _add_hash(side_x, cy - GAP - HASH_LEN/2, side_x, cy - GAP + HASH_LEN/2, "red")
+            _add_hash(side_x, cy + GAP - HASH_LEN/2, side_x, cy + GAP + HASH_LEN/2, "red")
+
+    # Neutral-zone: short horizontal blue marks left/right of each dot (above & below the dot)
+    NZ_HASH_OFFSET = 4.0  # ft from dot center along x
+    for cx, cy in nz_spots:
+        for sx in (-NZ_HASH_OFFSET, NZ_HASH_OFFSET):
+            _add_hash(cx + sx - HASH_LEN/2, cy - GAP, cx + sx + HASH_LEN/2, cy - GAP, "blue")
+            _add_hash(cx + sx - HASH_LEN/2, cy + GAP, cx + sx + HASH_LEN/2, cy + GAP, "blue")
+
+    # --- Goal creases (semi-circles; darker) ---
+    crease_radius = 6
+    crease_color = "rgba(25, 118, 210, 0.55)"  # darker blue
+    theta = np.linspace(-np.pi/2, np.pi/2, 50)
+
+    # Left crease (goal near x = -89 ft)
+    x_left = -89 + crease_radius * np.cos(theta)
+    y_left = 0 + crease_radius * np.sin(theta)
+    fig.add_trace(go.Scatter(
+        x=x_left, y=y_left,
+        fill="toself", mode="lines",
+        line=dict(color="rgba(0,0,0,0)"),
+        fillcolor=crease_color,
+        showlegend=False,
+        hoverinfo="skip",
+        opacity=0.7,
+    ))
+
+    # Right crease (goal near x = +89 ft)
+    x_right = 89 - crease_radius * np.cos(theta)
+    y_right = 0 + crease_radius * np.sin(theta)
+    fig.add_trace(go.Scatter(
+        x=x_right, y=y_right,
+        fill="toself", mode="lines",
+        line=dict(color="rgba(0,0,0,0)"),
+        fillcolor=crease_color,
+        showlegend=False,
+        hoverinfo="skip",
+        opacity=0.7,
+    ))
+
+    # --- Rounded white rink surface under the lines ---
+    left_x, right_x = -100, 100
+    bottom_y, top_y = -42.5, 42.5
+    r = 28.0
+    k = 0.5522847498
+    path = (
+        f"M {left_x+r},{bottom_y} "
+        f"L {right_x-r},{bottom_y} "
+        f"C {right_x-r + k*r},{bottom_y} {right_x},{bottom_y + r - k*r} {right_x},{bottom_y + r} "
+        f"L {right_x},{top_y - r} "
+        f"C {right_x},{top_y - r + k*r} {right_x - r + k*r},{top_y} {right_x - r},{top_y} "
+        f"L {left_x + r},{top_y} "
+        f"C {left_x + r - k*r},{top_y} {left_x},{top_y - r + k*r} {left_x},{top_y - r} "
+        f"L {left_x},{bottom_y + r} "
+        f"C {left_x},{bottom_y + r - k*r} {left_x + r - k*r},{bottom_y} {left_x + r},{bottom_y} Z"
+    )
+    fig.add_shape(type="path", path=path, fillcolor="white", line=dict(width=0), layer="below")
+
+    # Arena background
+    ARENA_BG = "#E9ECEF"
+    fig.update_layout(
+        plot_bgcolor=ARENA_BG, paper_bgcolor=ARENA_BG,
+        margin=dict(l=10, r=10, t=20, b=10), height=520,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                    font=dict(color="black"), bgcolor="rgba(0,0,0,0)", borderwidth=0),
+        hoverlabel=dict(font=dict(color="white"), bgcolor="rgba(0,0,0,0.7)"),
+    )
+
+    if not filtered.empty:
+        ...
+    else:
+        st.info("No data for the selected date(s).")
 
 # ---------- Export ----------
 with left:
