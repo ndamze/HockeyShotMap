@@ -810,18 +810,27 @@ with right:
         layer="above",
     )
 
-    # --- Hash marks (clean placement, no overlap) ---
-    # End-zone: short **horizontal** red ticks just OUTSIDE the circle,
-    # above & below the circle centerline (parallel to the end boards).
-    # Neutral-zone: short **horizontal** blue ticks left/right of each NZ dot.
-    HASH_LEN = 2.0      # ft (tick length)
-    EZ_GAP_Y = 5.5      # ft above/below circle center for ez ticks
-    EZ_OUT = 1.0        # ft outside circle edge (x offset)
-    NZ_GAP_Y = 1.8      # ft above/below the NZ dots
-    NZ_OFF_X = 4.0      # ft left/right from NZ dot center
+    # --- End-zone hash marks (vertical, above/below circles) ---
+    # NHL-style: short vertical red ticks above & below each end-zone circle,
+    # positioned slightly outside the circle ring. Neutral-zone ticks remain horizontal.
+    HASH_LEN = 2.0    # ft (tick length)
+    EZ_GAP_X = 5.5    # ft left/right of circle center for tick columns
+    EZ_OUT   = 1.0    # ft outside the circle edge (vertical offset from ring)
+    NZ_GAP_Y = 1.8    # ft above/below the NZ dots
+    NZ_OFF_X = 4.0    # ft left/right from NZ dot center
+
+    def _v_tick(x_center: float, y_center: float, color: str):
+        """Draw a short VERTICAL tick centered at (x_center, y_center)."""
+        fig.add_shape(
+            type="line",
+            x0=x_center, y0=y_center - HASH_LEN / 2,
+            x1=x_center, y1=y_center + HASH_LEN / 2,
+            line=dict(color=color, width=2),
+            layer="above",
+        )
 
     def _h_tick(x_center: float, y_center: float, color: str):
-        """Draw a short horizontal tick centered at (x_center, y_center)."""
+        """Draw a short HORIZONTAL tick centered at (x_center, y_center)."""
         fig.add_shape(
             type="line",
             x0=x_center - HASH_LEN / 2, y0=y_center,
@@ -830,22 +839,24 @@ with right:
             layer="above",
         )
 
-    # End-zone ticks: place them just outside the circle edge (to the left & right),
-    # one pair above the centerline and one pair below the centerline.
-    # This keeps them visually clear and avoids overlapping the circle stroke.
+    # End-zone ticks (red): top/bottom of the circle, two columns (left/right of center)
     for cx, cy in ez_centers:
-        # x at the outer edge of the circle ± EZ_OUT
-        x_left  = cx - ez_r - EZ_OUT
-        x_right = cx + ez_r + EZ_OUT
-        # y positions for the two rows of marks
-        y_top = cy + EZ_GAP_Y
-        y_bot = cy - EZ_GAP_Y
+        y_top = cy + ez_r + EZ_OUT   # just outside the circle ring
+        y_bot = cy - ez_r - EZ_OUT
+        x_left  = cx - EZ_GAP_X
+        x_right = cx + EZ_GAP_X
 
-        # left side (top/bottom) + right side (top/bottom)
-        _h_tick(x_left,  y_top, "red")
-        _h_tick(x_left,  y_bot, "red")
-        _h_tick(x_right, y_top, "red")
-        _h_tick(x_right, y_bot, "red")
+        _v_tick(x_left,  y_top, "red")
+        _v_tick(x_left,  y_bot, "red")
+        _v_tick(x_right, y_top, "red")
+        _v_tick(x_right, y_bot, "red")
+
+    # Neutral-zone ticks (blue): keep as tiny horizontal marks offset from each NZ dot
+    for cx, cy in nz_spots:
+        _h_tick(cx - NZ_OFF_X, cy + NZ_GAP_Y, "blue")
+        _h_tick(cx - NZ_OFF_X, cy - NZ_GAP_Y, "blue")
+        _h_tick(cx + NZ_OFF_X, cy + NZ_GAP_Y, "blue")
+        _h_tick(cx + NZ_OFF_X, cy - NZ_GAP_Y, "blue")
     
     # --- Goal creases (semi-circles; darker) ---
     crease_radius = 6
