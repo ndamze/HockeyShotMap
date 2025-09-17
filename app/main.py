@@ -752,15 +752,20 @@ with right:
             layer="above",
         )
 
-    # --- Goal lines (NHL: 11 ft from end boards, 2 inches wide) ---
+        # --- Goal lines (NHL: 11 ft from end boards, 2 inches wide) ---
     GOAL_X = 89.0                # distance from center to goal line
     GOAL_HALF_THICK = 0.167 / 2  # ~2 in total -> ~0.0835 ft half-width
+
+    # Clip to the straight board span so they don't enter the rounded corners
+    CORNER_RADIUS = 28.0
+    RINK_Y_MAX = 42.5
+    STRAIGHT_Y = RINK_Y_MAX - CORNER_RADIUS  # 14.5 ft
 
     for gx in (-GOAL_X, GOAL_X):
         fig.add_shape(
             type="rect",
             x0=gx - GOAL_HALF_THICK, x1=gx + GOAL_HALF_THICK,
-            y0=RINK_Y_MIN, y1=RINK_Y_MAX,
+            y0=-STRAIGHT_Y, y1=STRAIGHT_Y,   # <— clipped to avoid curved corners
             line=dict(width=0),
             fillcolor="red",
             layer="above",
