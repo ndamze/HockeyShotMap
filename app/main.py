@@ -985,6 +985,8 @@ with right:
                 name="Goals",
             ))
 
+        # Make every shape render under the data traces (shots/goals)
+        fig.update_shapes(layer="below")
         st.plotly_chart(fig, use_container_width=True)
     else:
         # Still show the rink even if there’s no data
