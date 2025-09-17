@@ -812,10 +812,9 @@ with right:
 
     # --- End-zone hash marks (vertical, above/below circles) ---
     # NHL-style: short vertical red ticks above & below each end-zone circle,
-    # positioned slightly outside the circle ring. Neutral-zone ticks remain horizontal.
     HASH_LEN = 2.0    # ft (tick length)
     EZ_GAP_X = 5.5    # ft left/right of circle center for tick columns
-    EZ_OUT   = 1.0    # ft outside the circle edge (vertical offset from ring)
+    EZ_OUT   = 0.0    # ft outside the circle edge (vertical offset from ring)
     NZ_GAP_Y = 1.8    # ft above/below the NZ dots
     NZ_OFF_X = 4.0    # ft left/right from NZ dot center
 
