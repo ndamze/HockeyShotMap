@@ -381,13 +381,13 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
     headers = {"User-Agent": "SparkerData-HockeyShotMap/1.0"}
 
     def _pks_from_stats_json(data: dict) -> list[int]:
-    pks: list[int] = []
-    for day in data.get("dates", []) or []:
-        for g in day.get("games", []) or []:
-            pk = g.get("gamePk")
-            if pk:
-                pks.append(int(pk))
-    return pks
+        pks: list[int] = []
+        for day in data.get("dates", []) or []:
+            for g in day.get("games", []) or []:
+                pk = g.get("gamePk")
+                if pk:
+                    pks.append(int(pk))
+        return pks
 
     # Preferred: StatsAPI ?date=
     try:
