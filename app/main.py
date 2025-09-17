@@ -428,10 +428,18 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
                 yield g
 
         def _date_of(game: dict) -> str | None:
-            for key in ("gameDate", "startTimeUTC", "startTime", "startTimeLocal"):
+            # Try common keys for date/time
+            for key in ("gameDate", "startTimeUTC", "startTime", "startTimeLocal", "gameDateISO", "gameTime"):
                 v = game.get(key)
                 if isinstance(v, str) and len(v) >= 10:
                     return v[:10]
+            # Sometimes wrapped in nested dicts like {"startTimeUTC": {"$date": "2025-01-13T00:00:00Z"}}
+            for key in ("gameDate", "startTimeUTC", "startTime", "startTimeLocal"):
+                v = game.get(key)
+                if isinstance(v, dict):
+                    inner = v.get("$date") or v.get("date")
+                    if isinstance(inner, str) and len(inner) >= 10:
+                        return inner[:10]
             return None
 
         pks = []
