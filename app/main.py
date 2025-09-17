@@ -699,7 +699,7 @@ with right:
 
     # --- Goal creases (semi-circles in light blue) ---
     crease_radius = 6
-    crease_color = "rgba(173, 216, 230, 0.4)"  # light blue with transparency
+    crease_color = "rgba(25, 118, 210, 0.55)"  # light blue with transparency
 
     # Half-circle from -90° to +90° (forward-facing)
     theta = np.linspace(-np.pi/2, np.pi/2, 50)
