@@ -376,19 +376,18 @@ def _empty_df() -> pd.DataFrame:
 
 # ---------- Exact-date schedule (robust) ----------
 @st.cache_data(ttl=300, show_spinner=False)
-@st.cache_data(ttl=300, show_spinner=False)
 def fetch_game_pks_for_date(d: _date) -> list[int]:
     """
     Return all gamePk values for calendar date d.
-    Robust: unions StatsAPI (?date and ±1-day range) + GameCenter schedule.
-    Avoids UTC pitfalls and weird key variants (officialDate, startTimeUTC, etc).
+    Strategy:
+      1) GameCenter day endpoint FIRST: if it returns a 'games' list, accept ALL IDs (already day-scoped).
+      2) GameCenter weekly buckets fallback (filter by week date or per-game date-ish keys).
+      3) StatsAPI union: ?date=YYYY-MM-DD and ±1 day range to catch UTC drift.
     """
     wanted = d.isoformat()
     headers = {"User-Agent": "SparkerData-HockeyShotMap/1.0"}
 
-    # ---- Helpers
     def _safe_str_date(v) -> str | None:
-        # accept "2025-01-13T...", or nested {"$date": "..."}
         if isinstance(v, str) and len(v) >= 10:
             return v[:10]
         if isinstance(v, dict):
@@ -398,52 +397,45 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
         return None
 
     def _is_wanted_game(game: dict) -> bool:
-        # Check common date keys used across the two APIs
-        keys = (
-            "gameDate", "officialDate", "startTimeUTC", "startTimeLocal",
-            "gameDateISO", "gameTime", "gameDateTime"
-        )
+        keys = ("gameDate", "officialDate", "startTimeUTC", "startTimeLocal",
+                "gameDateISO", "gameTime", "gameDateTime")
         for k in keys:
             if k in game:
                 s = _safe_str_date(game.get(k))
                 if s == wanted:
                     return True
-        # Some GameCenter "gameWeek" entries attach day at the week level
-        week_day = _safe_str_date(game.get("date"))
-        if week_day == wanted:
-            return True
-        return False
+        wk = _safe_str_date(game.get("date"))
+        return wk == wanted
 
     def _collect_from_stats_json(data: dict) -> list[int]:
         pks: list[int] = []
-        # Prefer exact day buckets if present
         for day in (data.get("dates") or []):
             day_key = _safe_str_date(day.get("date"))
             for g in (day.get("games") or []):
                 pk = g.get("gamePk")
                 if not pk:
                     continue
-                # If day_key matches, accept blindly; otherwise fall back to per-game key checks
                 if day_key == wanted or _is_wanted_game(g):
                     pks.append(int(pk))
         return pks
 
-    def _collect_from_gc_sched(sched: dict) -> list[int]:
+    def _collect_from_gc_sched_strict(sched: dict) -> list[int]:
         """
-        GameCenter schedule may return either:
-          - {"games": [...] } (already day-scoped)
-          - {"gameWeek": [{"date": "...", "games":[...]} ...]}
+        GameCenter schedule resolver:
+          - If 'games' exists at top-level (day endpoint), accept ALL IDs (already scoped by URL).
+          - Else if 'gameWeek' exists, filter by week 'date' or per-game date-ish keys.
         """
         pks: list[int] = []
 
-        # Direct "games" list (filter by date keys if present)
-        for g in (sched.get("games") or []):
-            if _is_wanted_game(g):
+        # Day endpoint: most reliable for odd dates (e.g., 2025-01-13)
+        if isinstance(sched.get("games"), list) and sched["games"]:
+            for g in sched["games"]:
                 pk = g.get("id") or g.get("gamePk") or g.get("gameId")
                 if pk:
                     pks.append(int(pk))
+            return pks  # early return — accept day scope as authoritative
 
-        # Weekly buckets
+        # Weekly buckets fallback
         for wk in (sched.get("gameWeek") or []):
             wk_date = _safe_str_date(wk.get("date"))
             for g in (wk.get("games") or []):
@@ -451,13 +443,20 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
                     pk = g.get("id") or g.get("gamePk") or g.get("gameId")
                     if pk:
                         pks.append(int(pk))
-
         return pks
 
-    # ---- Strategy: union of 3 sources
     found: set[int] = set()
 
-    # 1) StatsAPI exact date
+    # 1) GameCenter day FIRST — accept all if it exposes 'games'
+    try:
+        url = f"{SITE_BASE}/schedule/{wanted}"
+        with httpx.Client(timeout=20.0, headers=headers, trust_env=True) as c:
+            r = c.get(url); r.raise_for_status()
+            found.update(_collect_from_gc_sched_strict(r.json()))
+    except Exception:
+        pass
+
+    # 2) StatsAPI exact date
     try:
         url = f"{STATS_BASE}/schedule?date={wanted}"
         with httpx.Client(timeout=20.0, headers=headers, trust_env=True) as c:
@@ -466,7 +465,7 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
     except Exception:
         pass
 
-    # 2) StatsAPI ±1-day range (handles UTC drift / late starts)
+    # 3) StatsAPI ±1 day (UTC drift)
     try:
         start = (d - timedelta(days=1)).isoformat()
         end   = (d + timedelta(days=1)).isoformat()
@@ -474,15 +473,6 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
         with httpx.Client(timeout=20.0, headers=headers, trust_env=True) as c:
             r = c.get(url); r.raise_for_status()
             found.update(_collect_from_stats_json(r.json()))
-    except Exception:
-        pass
-
-    # 3) GameCenter schedule (day)
-    try:
-        url = f"{SITE_BASE}/schedule/{wanted}"
-        with httpx.Client(timeout=20.0, headers=headers, trust_env=True) as c:
-            r = c.get(url); r.raise_for_status()
-            found.update(_collect_from_gc_sched(r.json()))
     except Exception:
         pass
 
@@ -718,7 +708,7 @@ with right:
         layer="above"
     )
 
-    # Blue lines (approx at ±75 ft from center)
+    # Blue lines (NHL: ~±25 ft from center)
     for x in (-25, 25):
         fig.add_shape(
             type="line",
@@ -741,9 +731,9 @@ with right:
             layer="above"
         )
 
-    # --- Goal creases (semi-circles in light blue) ---
+    # --- Goal creases (semi-circles; darker) ---
     crease_radius = 6
-    crease_color = "rgba(25, 118, 210, 0.55)"  # light blue with transparency
+    crease_color = "rgba(25, 118, 210, 0.55)"  # darker blue
 
     # Half-circle from -90° to +90° (forward-facing)
     theta = np.linspace(-np.pi/2, np.pi/2, 50)
@@ -758,7 +748,7 @@ with right:
         fillcolor=crease_color,
         showlegend=False,
         hoverinfo="skip",
-        opacity=0.4,
+        opacity=0.7,  # more opaque
     ))
 
     # Right crease (goal near x = +89 ft) — mirror the arc
@@ -771,7 +761,7 @@ with right:
         fillcolor=crease_color,
         showlegend=False,
         hoverinfo="skip",
-        opacity=0.4,
+        opacity=0.7,  # more opaque
     ))
 
     # --- Rounded white rink surface under the lines ---
