@@ -727,6 +727,24 @@ with left:
 with right:
     fig = base_rink()
 
+    # --- Rounded white rink surface under the lines ---
+    left_x, right_x = -100, 100
+    bottom_y, top_y = -42.5, 42.5
+    r = 28.0
+    k = 0.5522847498
+    path = (
+        f"M {left_x+r},{bottom_y} "
+        f"L {right_x-r},{bottom_y} "
+        f"C {right_x-r + k*r},{bottom_y} {right_x},{bottom_y + r - k*r} {right_x},{bottom_y + r} "
+        f"L {right_x},{top_y - r} "
+        f"C {right_x},{top_y - r + k*r} {right_x - r + k*r},{top_y} {right_x - r},{top_y} "
+        f"L {left_x + r},{top_y} "
+        f"C {left_x + r - k*r},{top_y} {left_x},{top_y - r + k*r} {left_x},{top_y - r} "
+        f"L {left_x},{bottom_y + r} "
+        f"C {left_x},{bottom_y + r - k*r} {left_x + r - k*r},{bottom_y} {left_x + r},{bottom_y} Z"
+    )
+    fig.add_shape(type="path", path=path, fillcolor="white", line=dict(width=0), layer="below")
+
     # --- Accurate NHL center line + blue lines (1 ft wide) ---
     RINK_Y_MIN, RINK_Y_MAX = -42.5, 42.5
     LINE_HALF_FT = 0.5  # 1 ft total
@@ -738,7 +756,7 @@ with right:
         y0=RINK_Y_MIN, y1=RINK_Y_MAX,
         line=dict(width=0),
         fillcolor="red",
-        layer="above",
+        layer="below",
     )
 
     # Blue lines: inside edges at ±25 ft, 1 ft thick -> [-26,-25] and [25,26]
@@ -749,7 +767,7 @@ with right:
             y0=RINK_Y_MIN, y1=RINK_Y_MAX,
             line=dict(width=0),
             fillcolor="blue",
-            layer="above",
+            layer="below",
         )
 
     # --- Goal lines (clipped a bit less, so they look longer) ---
@@ -766,7 +784,7 @@ with right:
             y0=-GOAL_Y_EXTENT, y1=GOAL_Y_EXTENT,
             line=dict(width=0),
             fillcolor="red",
-            layer="above",
+            layer="below",
         )
 
     # --- End-zone faceoff circles (red outline) ---
@@ -779,7 +797,7 @@ with right:
             y0=cy - ez_r, y1=cy + ez_r,
             line=dict(color="red", width=2),
             fillcolor="rgba(0,0,0,0)",
-            layer="above",
+            layer="below",
         )
 
     # --- Faceoff dots (end-zone = red, neutral-zone = blue, center-ice = blue) ---
@@ -793,7 +811,7 @@ with right:
             y0=cy - DOT_R, y1=cy + DOT_R,
             line=dict(width=0),
             fillcolor="red",
-            layer="above",
+            layer="below",
         )
 
     # Neutral-zone blue dots (NO circles in NHL spec)
@@ -805,7 +823,7 @@ with right:
             y0=cy - DOT_R, y1=cy + DOT_R,
             line=dict(width=0),
             fillcolor="blue",
-            layer="above",
+            layer="below",
         )
 
     # Center-ice big blue circle + blue dot
@@ -816,7 +834,7 @@ with right:
         y0=-center_r, y1=center_r,
         line=dict(color="blue", width=2),
         fillcolor="rgba(0,0,0,0)",
-        layer="above",
+        layer="below",
     )
     fig.add_shape(
         type="circle",
@@ -824,7 +842,7 @@ with right:
         y0=-DOT_R, y1=DOT_R,
         line=dict(width=0),
         fillcolor="blue",
-        layer="above",
+        layer="below",
     )
 
     # --- End-zone hash marks (vertical, above/below circles) ---
@@ -842,7 +860,7 @@ with right:
             x0=x_center, y0=y_center - HASH_LEN / 2,
             x1=x_center, y1=y_center + HASH_LEN / 2,
             line=dict(color=color, width=2),
-            layer="above",
+            layer="below",
         )
 
     def _h_tick(x_center: float, y_center: float, color: str):
@@ -852,7 +870,7 @@ with right:
             x0=x_center - HASH_LEN / 2, y0=y_center,
             x1=x_center + HASH_LEN / 2, y1=y_center,
             line=dict(color=color, width=2),
-            layer="above",
+            layer="below",
         )
 
     # End-zone ticks (red): top/bottom of the circle, two columns (left/right of center)
@@ -897,25 +915,7 @@ with right:
         hoverinfo="skip",
         opacity=0.7,
     ))
-
-    # --- Rounded white rink surface under the lines ---
-    left_x, right_x = -100, 100
-    bottom_y, top_y = -42.5, 42.5
-    r = 28.0
-    k = 0.5522847498
-    path = (
-        f"M {left_x+r},{bottom_y} "
-        f"L {right_x-r},{bottom_y} "
-        f"C {right_x-r + k*r},{bottom_y} {right_x},{bottom_y + r - k*r} {right_x},{bottom_y + r} "
-        f"L {right_x},{top_y - r} "
-        f"C {right_x},{top_y - r + k*r} {right_x - r + k*r},{top_y} {right_x - r},{top_y} "
-        f"L {left_x + r},{top_y} "
-        f"C {left_x + r - k*r},{top_y} {left_x},{top_y - r + k*r} {left_x},{top_y - r} "
-        f"L {left_x},{bottom_y + r} "
-        f"C {left_x},{bottom_y + r - k*r} {left_x + r - k*r},{bottom_y} {left_x + r},{bottom_y} Z"
-    )
-    fig.add_shape(type="path", path=path, fillcolor="white", line=dict(width=0), layer="below")
-
+    
     # Arena background
     ARENA_BG = "#E9ECEF"
     fig.update_layout(
@@ -985,8 +985,6 @@ with right:
                 name="Goals",
             ))
 
-        # Make every shape render under the data traces (shots/goals)
-        fig.update_shapes(layer="below")
         st.plotly_chart(fig, use_container_width=True)
     else:
         # Still show the rink even if there’s no data
