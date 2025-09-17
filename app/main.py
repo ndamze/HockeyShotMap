@@ -700,21 +700,32 @@ with left:
 with right:
     fig = base_rink()
 
-    # --- Add NHL rink lines (center red + two blue) ---
+    # --- Accurate NHL center and blue lines (1 ft wide) ---
+    RINK_Y_MIN, RINK_Y_MAX = -42.5, 42.5
+    LINE_HALF_FT = 0.5  # 1 ft total width
+    
+    # Center red line: x in [-0.5, 0.5]
     fig.add_shape(
-        type="line",
-        x0=0, x1=0, y0=-42.5, y1=42.5,
-        line=dict(color="red", width=3),
-        layer="above"
+        type="rect",
+        x0=-LINE_HALF_FT, x1=LINE_HALF_FT,
+        y0=RINK_Y_MIN, y1=RINK_Y_MAX,
+        line=dict(width=0),
+        fillcolor="red",
+        layer="above",
     )
-
-    # Blue lines (NHL: ~±25 ft from center)
-    for x in (-25, 25):
+    
+    # Blue lines: inside edges at ±25 ft, 1 ft thick -> [-26,-25] and [25,26]
+    BLUE_INNER = 25.0
+    BLUE_OUTER = BLUE_INNER + 1.0
+    
+    for x0, x1 in [(-BLUE_OUTER, -BLUE_INNER), (BLUE_INNER, BLUE_OUTER)]:
         fig.add_shape(
-            type="line",
-            x0=x, x1=x, y0=-42.5, y1=42.5,
-            line=dict(color="blue", width=3),
-            layer="above"
+            type="rect",
+            x0=x0, x1=x1,
+            y0=RINK_Y_MIN, y1=RINK_Y_MAX,
+            line=dict(width=0),
+            fillcolor="blue",
+            layer="above",
         )
 
     # End-zone faceoff circles (red outline)
