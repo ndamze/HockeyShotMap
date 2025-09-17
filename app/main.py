@@ -810,34 +810,51 @@ with right:
         layer="above",
     )
 
-    # --- Hash marks ---
-    # End-zone: two short vertical red marks just outside each circle, above & below centerline.
-    HASH_LEN = 2.0   # ft
-    GAP = 1.5        # ft vertical offset from circle center
-    OUT_OFFSET = 1.0 # ft outside circle edge
+    # --- Hash marks (clean placement, no overlap) ---
+    # End-zone: short **horizontal** red ticks just OUTSIDE the circle,
+    # above & below the circle centerline (parallel to the end boards).
+    # Neutral-zone: short **horizontal** blue ticks left/right of each NZ dot.
+    HASH_LEN = 2.0      # ft (tick length)
+    EZ_GAP_Y = 5.5      # ft above/below circle center for ez ticks
+    EZ_OUT = 1.0        # ft outside circle edge (x offset)
+    NZ_GAP_Y = 1.8      # ft above/below the NZ dots
+    NZ_OFF_X = 4.0      # ft left/right from NZ dot center
 
-    def _add_hash(x0, y0, x1, y1, color):
+    def _h_tick(x_center: float, y_center: float, color: str):
+        """Draw a short horizontal tick centered at (x_center, y_center)."""
         fig.add_shape(
             type="line",
-            x0=x0, y0=y0, x1=x1, y1=y1,
+            x0=x_center - HASH_LEN / 2, y0=y_center,
+            x1=x_center + HASH_LEN / 2, y1=y_center,
             line=dict(color=color, width=2),
             layer="above",
         )
 
+    # End-zone ticks: place them just outside the circle edge (to the left & right),
+    # one pair above the centerline and one pair below the centerline.
+    # This keeps them visually clear and avoids overlapping the circle stroke.
     for cx, cy in ez_centers:
-        left_x = cx - ez_r - OUT_OFFSET
-        right_x = cx + ez_r + OUT_OFFSET
-        for side_x in (left_x, right_x):
-            _add_hash(side_x, cy - GAP - HASH_LEN / 2, side_x, cy - GAP + HASH_LEN / 2, "red")
-            _add_hash(side_x, cy + GAP - HASH_LEN / 2, side_x, cy + GAP + HASH_LEN / 2, "red")
+        # x at the outer edge of the circle ± EZ_OUT
+        x_left  = cx - ez_r - EZ_OUT
+        x_right = cx + ez_r + EZ_OUT
+        # y positions for the two rows of marks
+        y_top = cy + EZ_GAP_Y
+        y_bot = cy - EZ_GAP_Y
 
-    # Neutral-zone: short horizontal blue marks left/right of each dot (above & below the dot)
-    NZ_HASH_OFFSET = 4.0  # ft from dot center along x
+        # left side (top/bottom) + right side (top/bottom)
+        _h_tick(x_left,  y_top, "red")
+        _h_tick(x_left,  y_bot, "red")
+        _h_tick(x_right, y_top, "red")
+        _h_tick(x_right, y_bot, "red")
+
+    # Neutral-zone ticks: two tiny blue horizontals above/below each NZ dot,
+    # positioned a few feet to the left/right so they don't touch the dot.
     for cx, cy in nz_spots:
-        for sx in (-NZ_HASH_OFFSET, NZ_HASH_OFFSET):
-            _add_hash(cx + sx - HASH_LEN / 2, cy - GAP, cx + sx + HASH_LEN / 2, cy - GAP, "blue")
-            _add_hash(cx + sx - HASH_LEN / 2, cy + GAP, cx + sx + HASH_LEN / 2, cy + GAP, "blue")
-
+        _h_tick(cx - NZ_OFF_X, cy + NZ_GAP_Y, "blue")
+        _h_tick(cx - NZ_OFF_X, cy - NZ_GAP_Y, "blue")
+        _h_tick(cx + NZ_OFF_X, cy + NZ_GAP_Y, "blue")
+        _h_tick(cx + NZ_OFF_X, cy - NZ_GAP_Y, "blue")
+    
     # --- Goal creases (semi-circles; darker) ---
     crease_radius = 6
     crease_color = "rgba(25, 118, 210, 0.55)"  # darker blue
