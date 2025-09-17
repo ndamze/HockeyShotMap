@@ -870,67 +870,67 @@ with right:
         hoverlabel=dict(font=dict(color="white"), bgcolor="rgba(0,0,0,0.7)"),
     )
 
-        if not filtered.empty:
-        # Hover text helper: Player (TEAM) + period/time, and strength for goals
-        def _hover_row(r):
-            name = r.get("player") or "Unknown"
-            team = r.get("team") or ""
-            period = r.get("period")
-            try:
-                pnum = int(period) if pd.notna(period) else None
-            except Exception:
-                pnum = None
-            ptime = r.get("periodTime") or ""
-            when = f"P{pnum} {ptime}".strip() if pnum else ptime
+    if not filtered.empty:
+    # Hover text helper: Player (TEAM) + period/time, and strength for goals
+    def _hover_row(r):
+        name = r.get("player") or "Unknown"
+        team = r.get("team") or ""
+        period = r.get("period")
+        try:
+            pnum = int(period) if pd.notna(period) else None
+        except Exception:
+            pnum = None
+        ptime = r.get("periodTime") or ""
+        when = f"P{pnum} {ptime}".strip() if pnum else ptime
 
-            label = f"{name} ({team})"
-            if when:
-                label += f"<br>{when}"
-            if int(r.get("is_goal", 0) or 0) == 1:
-                stg = r.get("strength")
-                if isinstance(stg, str) and stg and stg != "Unknown":
-                    label += f" — {stg}"
-            return label
+        label = f"{name} ({team})"
+        if when:
+            label += f"<br>{when}"
+        if int(r.get("is_goal", 0) or 0) == 1:
+            stg = r.get("strength")
+            if isinstance(stg, str) and stg and stg != "Unknown":
+                label += f" — {stg}"
+        return label
 
-        # Separate goals vs non-goals
-        non_goals = filtered[filtered["is_goal"] != 1] if "is_goal" in filtered else filtered
-        goals = filtered[filtered["is_goal"] == 1] if "is_goal" in filtered else filtered.iloc[0:0]
+    # Separate goals vs non-goals
+    non_goals = filtered[filtered["is_goal"] != 1] if "is_goal" in filtered else filtered
+    goals = filtered[filtered["is_goal"] == 1] if "is_goal" in filtered else filtered.iloc[0:0]
 
-        if not non_goals.empty:
-            fig.add_trace(go.Scatter(
-                x=non_goals.get("x", []), y=non_goals.get("y", []),
-                mode="markers",
-                marker=dict(
-                    color=[TEAM_COLORS.get(t, "#888888")
-                           for t in non_goals.get("team", pd.Series([""]*len(non_goals))).fillna("")],
-                    size=7, opacity=0.8,
-                    line=dict(color="black", width=0.8),
-                ),
-                text=[_hover_row(r) for _, r in non_goals.iterrows()],
-                hovertemplate="%{text}<extra></extra>",
-                name="Shots",
-            ))
+    if not non_goals.empty:
+        fig.add_trace(go.Scatter(
+            x=non_goals.get("x", []), y=non_goals.get("y", []),
+            mode="markers",
+            marker=dict(
+                color=[TEAM_COLORS.get(t, "#888888")
+                       for t in non_goals.get("team", pd.Series([""]*len(non_goals))).fillna("")],
+                size=7, opacity=0.8,
+                line=dict(color="black", width=0.8),
+            ),
+            text=[_hover_row(r) for _, r in non_goals.iterrows()],
+            hovertemplate="%{text}<extra></extra>",
+            name="Shots",
+        ))
 
-        if not goals.empty:
-            fig.add_trace(go.Scatter(
-                x=goals.get("x", []), y=goals.get("y", []),
-                mode="markers",
-                marker=dict(
-                    color=[TEAM_COLORS.get(t, "#888888")
-                           for t in goals.get("team", pd.Series([""]*len(goals))).fillna("")],
-                    size=9, opacity=0.95, symbol="star",
-                    line=dict(color="black", width=1.0),
-                ),
-                text=[_hover_row(r) for _, r in goals.iterrows()],
-                hovertemplate="%{text}<extra></extra>",
-                name="Goals",
-            ))
+    if not goals.empty:
+        fig.add_trace(go.Scatter(
+            x=goals.get("x", []), y=goals.get("y", []),
+            mode="markers",
+            marker=dict(
+                color=[TEAM_COLORS.get(t, "#888888")
+                       for t in goals.get("team", pd.Series([""]*len(goals))).fillna("")],
+                size=9, opacity=0.95, symbol="star",
+                line=dict(color="black", width=1.0),
+            ),
+            text=[_hover_row(r) for _, r in goals.iterrows()],
+            hovertemplate="%{text}<extra></extra>",
+            name="Goals",
+        ))
 
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        # Still show the rink even if there’s no data
-        st.plotly_chart(fig, use_container_width=True)
-        st.info("No data for the selected date(s).")
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    # Still show the rink even if there’s no data
+    st.plotly_chart(fig, use_container_width=True)
+    st.info("No data for the selected date(s).")
 
 # ---------- Export ----------
 with left:
