@@ -675,11 +675,25 @@ with right:
     )
 
     # Blue lines (approx at ±75 ft from center)
-    for x in (-75, 75):
+    for x in (-25, 25):
         fig.add_shape(
             type="line",
             x0=x, x1=x, y0=-42.5, y1=42.5,
             line=dict(color="blue", width=3),
+            layer="above"
+        )
+
+    # End-zone faceoff circles (red outline)
+    # Standard approx: centers at x = ±69, y = ±22; radius ≈ 15 ft
+    circle_r = 15.0
+    circle_centers = [(-69, 22), (-69, -22), (69, 22), (69, -22)]
+    for cx, cy in circle_centers:
+        fig.add_shape(
+            type="circle",
+            x0=cx - circle_r, x1=cx + circle_r,
+            y0=cy - circle_r, y1=cy + circle_r,
+            line=dict(color="red", width=2),
+            fillcolor="rgba(0,0,0,0)",
             layer="above"
         )
 
