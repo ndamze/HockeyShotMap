@@ -846,14 +846,6 @@ with right:
         _h_tick(x_left,  y_bot, "red")
         _h_tick(x_right, y_top, "red")
         _h_tick(x_right, y_bot, "red")
-
-    # Neutral-zone ticks: two tiny blue horizontals above/below each NZ dot,
-    # positioned a few feet to the left/right so they don't touch the dot.
-    for cx, cy in nz_spots:
-        _h_tick(cx - NZ_OFF_X, cy + NZ_GAP_Y, "blue")
-        _h_tick(cx - NZ_OFF_X, cy - NZ_GAP_Y, "blue")
-        _h_tick(cx + NZ_OFF_X, cy + NZ_GAP_Y, "blue")
-        _h_tick(cx + NZ_OFF_X, cy - NZ_GAP_Y, "blue")
     
     # --- Goal creases (semi-circles; darker) ---
     crease_radius = 6
