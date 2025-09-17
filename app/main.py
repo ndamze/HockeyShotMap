@@ -818,8 +818,10 @@ with right:
                 hovertemplate="%{text}<extra></extra>",
                 name="Goals",
             ))
-
-        st.plotly_chart(fig, use_container_width=True)
+    # Polish rink rendering for Streamlit: margins + transparent bg + fixed height
+    fig.update_layout(height=520, margin=dict(l=20, r=20, t=20, b=20),
+                      paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+    st.plotly_chart(fig, use_container_width=True, height=520)
     else:
         st.info("No data for the selected date(s).")
 
@@ -847,7 +849,14 @@ if not filtered.empty and isinstance(st.session_state.get("data_dates"), tuple):
         .reset_index()
         .sort_values(["shots", "goals"], ascending=[False, False])
     )
-    st.dataframe(summary, use_container_width=True, height=260)
+    st.dataframe(
+        summary.rename(columns={'player':'Player','team':'Team','shots':'Shots','goals':'Goals'}),
+        use_container_width=True,
+        height=320,
+        hide_index=True,
+        column_config={'Shots': st.column_config.NumberColumn(format='%d'),
+                       'Goals': st.column_config.NumberColumn(format='%d')}
+    )
 
 # Compact footer caption
 st.caption(
