@@ -87,6 +87,44 @@ If the app shows *“No data for the selected date(s.)”* for an active date, c
 
 ---
 
+# 📊 Data Sources
+
+This project pulls live and historical hockey play-by-play directly from the **National Hockey League’s public APIs**. These endpoints are not officially documented, but are widely used in the hockey analytics community.
+
+---
+
+## NHL StatsAPI
+**Base URL:** `https://statsapi.web.nhl.com/api/v1/`
+
+- Primary source for schedules, boxscores, and live game feeds.  
+- Example endpoints:  
+  - `https://statsapi.web.nhl.com/api/v1/schedule?date=2024-11-22`  
+  - `https://statsapi.web.nhl.com/api/v1/game/{gamePk}/feed/live`  
+- Contains play-by-play data including shots, goals, coordinates, game strength (5v5, PP, PK), and player/team metadata.
+
+---
+
+## NHL Web / GameCenter API
+**Base URL:** `https://api-web.nhle.com/v1/`
+
+- Used as a backup/fallback source, especially for roster info or plays not returned by the StatsAPI feed.  
+- Example endpoints:  
+  - `https://api-web.nhle.com/v1/schedule/2024-11-22`  
+  - `https://api-web.nhle.com/v1/gamecenter/{gamePk}/play-by-play`  
+- Useful for roster details, alternative shot/goal coordinates, and matchup context.
+
+---
+
+## Unofficial References
+- [NHL Stats API (GitHub community notes)](https://gitlab.com/dword4/nhlapi)  
+- [NHL API – StatsAPI GitHub mirror](https://github.com/dword4/nhlapi)
+
+---
+
+⚠️ **Disclaimer:** These endpoints are publicly accessible but **not officially supported by the NHL**. They may change without notice.
+
+---
+
 ## 🛠 Troubleshooting
 
 - **PowerShell: cannot activate venv**  
