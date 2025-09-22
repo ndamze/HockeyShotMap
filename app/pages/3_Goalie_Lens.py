@@ -1,31 +1,22 @@
-
-import sys, os, importlib, traceback
+import sys, os, traceback
 import streamlit as st
-
-# Ensure this pages directory is importable (so `_shared.py` in the same folder can be imported)
-_PAGES_DIR = os.path.dirname(__file__)
-if _PAGES_DIR not in sys.path:
-    sys.path.append(_PAGES_DIR)
-
-try:
-    _shared = importlib.import_module("_shared")
-    fetch_shots_dataframe = _shared.fetch_shots_dataframe
-    # Optional helpers (some pages won't use all of these)
-    list_teams       = getattr(_shared, "list_teams", None)
-    list_players     = getattr(_shared, "list_players", None)
-    list_goalies     = getattr(_shared, "list_goalies", None)
-    summarize_team   = getattr(_shared, "summarize_team", None)
-    summarize_player = getattr(_shared, "summarize_player", None)
-    summarize_goalie = getattr(_shared, "summarize_goalie", None)
-except Exception as e:
-    st.error("Failed to import `_shared.py`. See details below:")
-    st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
-    st.stop()
-
 import pandas as pd
-import numpy as np
 import plotly.express as px
 from datetime import date, timedelta
+
+# --- import repo loader via adapter ---
+try:
+    from _shared_repo import fetch_shots_dataframe
+    def list_goalies(df, team=None):
+        s = df.dropna(subset=["goalieId","goalieName"])
+        s = s[s["team"]==team] if team else s
+        return sorted({(int(r["goalieId"]), str(r["goalieName"])) for _, r in s.iterrows()}, key=lambda x:x[1])
+    def list_teams(df): 
+        return sorted([t for t in df["team"].dropna().unique().tolist() if t])
+except Exception as e:
+    st.error("Could not import the repo data adapter (_shared_repo.py).")
+    st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
+    st.stop()
 
 st.set_page_config(page_title="Goalie Lens", page_icon="🥅", layout="wide")
 st.title("Goalie Lens")
@@ -38,10 +29,7 @@ with st.sidebar:
     if start > end:
         start, end = end, start
     df = fetch_shots_dataframe(start, end)
-    team_filter = st.selectbox("Team (optional)", ["All"] + (list_teams(df) if list_teams else []))
-    if list_goalies is None:
-        st.error("`list_goalies` missing in _shared.py")
-        st.stop()
+    team_filter = st.selectbox("Team (optional)", ["All"] + list_teams(df))
     goalies = list_goalies(df, None if team_filter=="All" else team_filter)
     if not goalies:
         st.info("No goalies found for the filters.")
@@ -50,7 +38,7 @@ with st.sidebar:
     sel_name = st.selectbox("Goalie", names)
     gid = dict(goalies)[sel_name]
 
-subset = df[df["goalieId"]==gid].copy()
+subset = df[df["goalieId"] == gid].copy()
 subset_sog = subset[subset["isSOG"]]
 
 # KPIs
@@ -68,7 +56,7 @@ k4.metric("xGA (sum xG faced)", f"{xga:.2f}")
 
 st.markdown("---")
 
-# Location maps
+# Shot map
 st.subheader(f"Shot Map Faced – {sel_name}")
 if shots_faced >= 1:
     scat = px.scatter(subset_sog, x="x", y="y",
@@ -77,7 +65,6 @@ if shots_faced >= 1:
                       hover_data=["team","shooterName","date","period","periodTime","distance","angle"],
                       title="Shots Faced (normalized toward +x)")
     scat.update_yaxes(scaleanchor="x", scaleratio=1)
-    scat.update_layout(height=550, legend_title_text="Outcome")
     st.plotly_chart(scat, use_container_width=True)
 else:
     st.info("No shots faced to show.")
@@ -93,19 +80,17 @@ bucket = tmp.groupby("distBucket").agg(
     GA=("isGoal","sum"),
     Saves=("isSOG", lambda s: int(s.count()) - int(tmp.loc[s.index, "isGoal"].sum()))
 ).reset_index()
-bucket["SV%"] = (bucket["Saves"] / bucket["Faced"]).replace([np.inf,-np.inf], np.nan)
+bucket["SV%"] = (bucket["Saves"] / bucket["Faced"]).replace([float("inf"),float("-inf")], pd.NA)
 st.dataframe(bucket, use_container_width=True)
-
 bar = px.bar(bucket, x="distBucket", y=["Faced","GA","Saves"], barmode="group", title="By Distance")
 st.plotly_chart(bar, use_container_width=True)
 
-# Heatmap of goals against
+# Goals against heatmap
 st.subheader("Goals Against Heatmap")
 ga = subset_sog[subset_sog["isGoal"]]
 if len(ga) >= 1:
     hm = px.density_heatmap(ga, x="x", y="y", nbinsx=40, nbinsy=20, histfunc="count", title="Goals Against Density")
     hm.update_yaxes(scaleanchor="x", scaleratio=1)
-    hm.update_layout(height=500)
     st.plotly_chart(hm, use_container_width=True)
 else:
     st.info("No goals against in range.")
