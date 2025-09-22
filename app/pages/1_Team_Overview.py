@@ -1,7 +1,17 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
 from datetime import date, timedelta
+
+# --- Rink plot import with dual-path fallback (same as Home) ---
+try:
+    from app.components.rink_plot import base_rink  # when running from repo root
+except ModuleNotFoundError:
+    try:
+        from components.rink_plot import base_rink  # when running inside app/
+    except ModuleNotFoundError:
+        st.error("Could not import rink_plot component. Please ensure the components directory exists.")
+        st.stop()
 
 st.set_page_config(page_title="Team Overview", page_icon="🏒", layout="wide")
 st.title("Team Overview")
@@ -14,41 +24,49 @@ def _find_df() -> pd.DataFrame | None:
             return st.session_state[k]
     return None
 
+def _norm_strength(s: str | None) -> str:
+    if s is None:
+        return "5v5"
+    t = str(s).strip().lower().replace("on","v").replace("-","").replace(" ", "")
+    # common aliases
+    if t in {"ev","even"}: return "5v5"
+    if t in {"pp","powerplay","powerplayadvantage"}: return "PP"
+    if t in {"pk","sh","shorthanded","penaltykill"}: return "PK"
+    # patterns like 4v4, 3v3, 5v4, 6v5 etc.
+    if "v" in t:
+        parts = t.split("v")
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            return f"{parts[0]}v{parts[1]}"
+    return t.upper() if t else "5v5"
+
 def _harmonize(df: pd.DataFrame) -> pd.DataFrame:
-    """Make sure the columns our charts expect exist, mapping from your main page schema."""
     out = df.copy()
 
-    # strength
-    if "strength" not in out.columns:
-        out["strength"] = "EV"
-
-    # isSOG (shot on goal or goal) from 'event'
+    # isSOG / isGoal from your schema
     if "isSOG" not in out.columns:
-        if "event" in out.columns:
-            out["isSOG"] = out["event"].isin(["Shot","Goal"])
-        else:
-            out["isSOG"] = False
-
-    # isGoal from 'is_goal' or 'event'
+        out["isSOG"] = out.get("event", "").isin(["Shot","Goal"])
     if "isGoal" not in out.columns:
         if "is_goal" in out.columns:
             out["isGoal"] = out["is_goal"].astype(bool)
-        elif "event" in out.columns:
-            out["isGoal"] = out["event"] == "Goal"
         else:
-            out["isGoal"] = False
+            out["isGoal"] = out.get("event", "") == "Goal"
 
-    # date from 'source_date' or 'gameDate'
+    # date (if you fetched a range, you already store source_date)
     if "date" not in out.columns:
         if "source_date" in out.columns:
             out["date"] = pd.to_datetime(out["source_date"], errors="coerce").dt.date
         elif "gameDate" in out.columns:
             out["date"] = pd.to_datetime(out["gameDate"], errors="coerce").dt.date
 
-    # ensure boolean dtype for sums
-    for col in ("isSOG","isGoal"):
-        if col in out.columns:
-            out[col] = out[col].astype(bool)
+    # strength normalized
+    if "strength" in out.columns:
+        out["strength"] = out["strength"].map(_norm_strength)
+    else:
+        out["strength"] = "5v5"
+
+    # Ensure boolean dtype
+    out["isSOG"] = out["isSOG"].astype(bool)
+    out["isGoal"] = out["isGoal"].astype(bool)
 
     return out
 
@@ -92,14 +110,10 @@ c4.metric("xG (sum)", f"{xg:.2f}")
 
 st.markdown("---")
 
-# ---- By Strength table (only aggregate columns that exist) ----
+# ---- By Strength table ----
 st.subheader("By Strength")
-agg_spec = {}
-if "isSOG" in team_df: agg_spec["Shots"] = ("isSOG","sum")
-else:                   agg_spec["Shots"] = ("team","size")
-if "isGoal" in team_df: agg_spec["Goals"] = ("isGoal","sum")
-if "xG" in team_df:     agg_spec["xG"]    = ("xG","sum")
-
+agg_spec = {"Shots":("isSOG","sum"), "Goals":("isGoal","sum")}
+if "xG" in team_df: agg_spec["xG"] = ("xG","sum")
 strength_tbl = (
     team_df.groupby("strength", dropna=False)
     .agg(**agg_spec)
@@ -108,12 +122,16 @@ strength_tbl = (
 )
 st.dataframe(strength_tbl, use_container_width=True)
 
-# ---- Shot Density heatmap ----
+# ---- Shot Density heatmap on the rink ----
 st.subheader("Shot Density Heatmap (All shots, normalized attacking)")
 if {"x","y"}.issubset(team_df.columns):
-    heat_df = team_df[team_df.get("isSOG", True)].copy()
+    heat_df = team_df[team_df["isSOG"]].copy()
     if len(heat_df) >= 5:
-        fig = px.density_heatmap(heat_df, x="x", y="y", nbinsx=40, nbinsy=20, histfunc="count", title="Shot Density")
+        fig = base_rink()
+        fig.add_trace(go.Histogram2d(
+            x=heat_df["x"], y=heat_df["y"],
+            nbinsx=40, nbinsy=20, opacity=0.85, showscale=True
+        ))
         fig.update_yaxes(scaleanchor="x", scaleratio=1)
         st.plotly_chart(fig, use_container_width=True)
     else:
@@ -121,44 +139,40 @@ if {"x","y"}.issubset(team_df.columns):
 else:
     st.info("This dataset doesn't include shot coordinates (x,y).")
 
-# ---- Danger breakdown (only if 'danger' exists) ----
+# ---- Danger breakdown (Low → Medium → High) ----
 if "danger" in team_df.columns:
     st.subheader("Danger Breakdown")
-    dang_agg = {}
-    if "isSOG" in team_df: dang_agg["Shots"] = ("isSOG","sum")
-    if "isGoal" in team_df: dang_agg["Goals"] = ("isGoal","sum")
-    if "xG" in team_df:     dang_agg["xG"]    = ("xG","sum")
+    # normalize to lower-case labels, then order
+    dtmp = team_df.copy()
+    dtmp["danger"] = dtmp["danger"].astype(str).str.lower()
+    cats = pd.api.types.CategoricalDtype(["low","medium","high"], ordered=True)
+    dtmp["danger"] = dtmp["danger"].astype(cats)
 
-    if dang_agg:
-        dang = (
-            team_df[team_df.get("isSOG", True)]
-            .groupby("danger", dropna=False)
-            .agg(**dang_agg)
-            .reset_index()
-            .sort_values("danger", na_position="last")
-        )
-        ycols = [c for c in ["Shots","Goals","xG"] if c in dang]
-        if ycols:
-            bar = px.bar(dang, x="danger", y=ycols, barmode="group", title="Shots & Goals by Danger")
-            st.plotly_chart(bar, use_container_width=True)
+    dang = (
+        dtmp[dtmp["isSOG"]]
+        .groupby("danger", dropna=False)
+        .agg(Shots=("isSOG","sum"), Goals=("isGoal","sum"))
+        .reset_index()
+        .sort_values("danger")
+    )
+    dang["danger"] = dang["danger"].astype(str).str.capitalize()
+    fig_d = go.Figure()
+    fig_d.add_bar(x=dang["danger"], y=dang["Shots"], name="Shots")
+    fig_d.add_bar(x=dang["danger"], y=dang["Goals"], name="Goals")
+    fig_d.update_layout(barmode="group", title="Shots & Goals by Danger")
+    st.plotly_chart(fig_d, use_container_width=True)
 
-# ---- Trend (only if 'date' exists) ----
+# ---- Trend ----
 if "date" in team_df.columns:
     st.subheader("Trend")
-    trend_agg = {}
-    if "isSOG" in team_df: trend_agg["Shots"] = ("isSOG","sum")
-    else:                  trend_agg["Shots"] = ("team","size")
-    if "isGoal" in team_df: trend_agg["Goals"] = ("isGoal","sum")
-    if "xG" in team_df:     trend_agg["xG"]    = ("xG","sum")
-
     trend = (
-        team_df[team_df.get("isSOG", True)]
+        team_df[team_df["isSOG"]]
         .groupby("date", dropna=False)
-        .agg(**trend_agg)
+        .agg(Shots=("isSOG","sum"), Goals=("isGoal","sum"))
         .reset_index()
         .sort_values("date")
     )
-    y_cols = [c for c in ["Shots","Goals","xG"] if c in trend]
-    if y_cols:
-        line = px.line(trend, x="date", y=y_cols, title="Game-by-Game")
-        st.plotly_chart(line, use_container_width=True)
+    fig_t = go.Figure()
+    fig_t.add_scatter(x=trend["date"], y=trend["Shots"], name="Shots", mode="lines")
+    fig_t.add_scatter(x=trend["date"], y=trend["Goals"], name="Goals", mode="lines")
+    st.plotly_chart(fig_t, use_container_width=True)
