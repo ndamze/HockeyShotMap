@@ -1,21 +1,18 @@
 """
 _adapter: reuse the repo's existing loader so pages never fetch directly.
 
-It tries to find a function in your repo that returns a *shot-level DataFrame*
-for a date range, then normalizes columns for the new pages.
+If a loader isn't found automatically, this module will display a clear error
+that lists candidate functions it discovered (module:function). Then you can:
+  - set HSM_LOADER="module.sub:func" in Streamlit Secrets (TOML), or
+  - tell me which one to pin here.
 
-Discovery rules:
-- Scans common modules under src/ and app/ for functions whose names look like
-  "fetch_*shots*" or "get_*shots*", accepting (start_date, end_date).
-- You can hardwire the exact function via HSM_LOADER="module:function".
-  Example: HSM_LOADER="src.nhl:fetch_shots_dataframe"
-
-If nothing is found, it raises with a clear message (so you can tell me the path).
+A "loader" is any function accepting (start_date, end_date) and returning
+a pandas.DataFrame of shot-level events.
 """
 
 from __future__ import annotations
-import os, sys, importlib, inspect, types
-from typing import Optional, Callable, Tuple, List
+import os, sys, importlib, inspect
+from typing import Optional, Callable, List, Tuple
 import pandas as pd
 import numpy as np
 import math
@@ -56,7 +53,7 @@ def _ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
         if c not in df.columns:
             df[c] = pd.NA
 
-    # normalize coords (only once)
+    # normalize coords
     if "x" in df.columns and "y" in df.columns:
         xy = df[["x","y"]].apply(lambda r: _normalize_xy(r["x"], r["y"]), axis=1, result_type="expand")
         df[["x","y"]] = xy.values
@@ -70,13 +67,11 @@ def _ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
     if "danger" not in df.columns:
         df["danger"] = df[["distance","angle"]].apply(lambda r: _danger(r["distance"], r["angle"]), axis=1)
 
-    # isSOG
+    # isSOG / isGoal
     if "eventType" in df.columns:
         df["isSOG"] = df["eventType"].isin(["SHOT","GOAL"])
     else:
         df["isSOG"] = False
-
-    # isGoal
     if "isGoal" not in df.columns:
         df["isGoal"] = (df.get("eventType","") == "GOAL")
 
@@ -86,7 +81,6 @@ def _ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["date"] = pd.NaT
 
-    # order nicely (missing cols will be created above anyway)
     order = ["gameDate","date","team","eventType","period","periodTime","strength",
              "x","y","distance","angle","danger","xG",
              "shooterId","shooterName","goalieId","goalieName","isSOG","isGoal"]
@@ -94,22 +88,12 @@ def _ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
         if c not in df.columns: df[c] = pd.NA
     return df[order]
 
-# ----------------- loader discovery -----------------
-def _import_from_str(spec: str) -> Optional[Callable]:
-    """spec like 'module.sub:func'"""
-    try:
-        mod_name, func_name = spec.split(":")
-        m = importlib.import_module(mod_name)
-        f = getattr(m, func_name, None)
-        return f if callable(f) else None
-    except Exception:
-        return None
-
+# ----------------- discovery -----------------
 def _signature_ok(f: Callable) -> bool:
     try:
         sig = inspect.signature(f)
         params = list(sig.parameters.values())
-        # accept (start, end) or (**kwargs) style
+        # accept (start, end) or a kwargs-style function
         return len(params) >= 2 or any(p.kind == p.VAR_KEYWORD for p in params)
     except Exception:
         return False
@@ -118,57 +102,85 @@ def _looks_like_shot_fetcher(name: str) -> bool:
     n = name.lower()
     return ("shot" in n) and (n.startswith("fetch_") or n.startswith("get_"))
 
-def _try_candidates() -> Optional[Callable]:
-    # 1) Honor explicit override
-    env = os.environ.get("HSM_LOADER")
-    if env:
-        f = _import_from_str(env)
-        if f and _signature_ok(f): return f
+def _import_module_safe(mod_name: str):
+    try:
+        return importlib.import_module(mod_name)
+    except Exception:
+        return None
 
-    # 2) Likely modules to scan (add more if needed)
+def _scan_module_for_candidates(mod_name: str) -> List[Tuple[str, Callable]]:
+    m = _import_module_safe(mod_name)
+    out: List[Tuple[str, Callable]] = []
+    if not m:
+        return out
+    for fn_name, fn in inspect.getmembers(m, inspect.isfunction):
+        if _looks_like_shot_fetcher(fn_name) and _signature_ok(fn):
+            out.append((f"{mod_name}:{fn_name}", fn))
+    return out
+
+def _deep_scan_pkg(root_pkg: str) -> List[Tuple[str, Callable]]:
+    found: List[Tuple[str, Callable]] = []
+    pkg = _import_module_safe(root_pkg)
+    if not pkg:
+        return found
+    # try direct functions on the package
+    found.extend(_scan_module_for_candidates(root_pkg))
+    # scan immediate submodules that are already imported/packaged
+    for name, obj in inspect.getmembers(pkg):
+        if inspect.ismodule(obj) and obj.__name__.startswith(root_pkg + "."):
+            found.extend(_scan_module_for_candidates(obj.__name__))
+            # (avoid recursive import crawling to keep it fast)
+    return found
+
+def _try_find_loader() -> Tuple[Optional[Callable], List[str]]:
+    # 0) explicit override
+    env = os.environ.get("HSM_LOADER")
+    if env and ":" in env:
+        mod, fn = env.split(":", 1)
+        m = _import_module_safe(mod)
+        if m:
+            f = getattr(m, fn, None)
+            if callable(f) and _signature_ok(f):
+                return f, [env]
+
+    # 1) scan common modules
     mods = [
         "src.nhl", "src.data", "src.pipeline", "src.api", "src",
         "app.main_data", "app.data", "app",
     ]
+    candidates: List[Tuple[str, Callable]] = []
     for mod in mods:
-        try:
-            m = importlib.import_module(mod)
-        except Exception:
-            continue
-        for name, obj in inspect.getmembers(m, inspect.isfunction):
-            if _looks_like_shot_fetcher(name) and _signature_ok(obj):
-                return obj
+        candidates.extend(_scan_module_for_candidates(mod))
 
-    # 3) Deep scan under src.* submodules
-    try:
-        pkg = importlib.import_module("src")
-        for name, obj in inspect.getmembers(pkg, inspect.ismodule):
-            try:
-                for fn_name, fn in inspect.getmembers(obj, inspect.isfunction):
-                    if _looks_like_shot_fetcher(fn_name) and _signature_ok(fn):
-                        return fn
-            except Exception:
-                continue
-    except Exception:
-        pass
+    # 2) shallow deep-scan src.* (already-importable submodules)
+    candidates.extend(_deep_scan_pkg("src"))
 
-    return None
+    f: Optional[Callable] = candidates[0][1] if candidates else None
+    labels = [c[0] for c in candidates]
+    return f, labels
 
-_LOADER = _try_candidates()
+_LOADER, _CANDIDATES = _try_find_loader()
 
-# ----------------- public API used by pages -----------------
+# ----------------- public API -----------------
 def fetch_shots_dataframe(start_date, end_date) -> pd.DataFrame:
-    """
-    First choice: call the repo’s real loader.
-    If not found, raise with a helpful message so you can set HSM_LOADER or tell us the path.
-    """
     if _LOADER is None:
-        raise ImportError(
-            "Could not find a repo loader. Set HSM_LOADER='module.sub:func' in Streamlit "
-            "secrets (TOML), e.g. HSM_LOADER = \"src.nhl:fetch_shots_dataframe\"; "
-            "or tell me the function path and I’ll hardwire it."
-        )
+        # Make the error self-serve: show candidates right in the exception
+        msg = [
+            "Could not find a repo loader (function to fetch shot-level data).",
+            "Fix it by either:",
+            "  1) Setting HSM_LOADER = \"module.sub:func\" in Streamlit Secrets (TOML), OR",
+            "  2) Telling us the correct function so we can hardwire it here.",
+        ]
+        if _CANDIDATES:
+            msg.append("")
+            msg.append("Discovered candidate functions you can try:")
+            for c in _CANDIDATES[:20]:
+                msg.append(f"  - {c}")
+            if len(_CANDIDATES) > 20:
+                msg.append(f"  ... and {len(_CANDIDATES)-20} more")
+        raise ImportError("\n".join(msg))
+
     df = _LOADER(start_date, end_date)
     if not isinstance(df, pd.DataFrame):
-        raise TypeError(f"Loader {_LOADER} returned {type(df)}, expected pandas.DataFrame")
+        raise TypeError(f"Loader returned {type(df)}, expected pandas.DataFrame")
     return _ensure_schema(df)
