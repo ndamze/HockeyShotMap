@@ -647,4 +647,138 @@ with right:
     GOAL_HALF_THICK = 0.167 / 2
     GOAL_Y_EXTENT = 36.0
     for gx in (-GOAL_X, GOAL_X):
-        fig.add_shape(type="rect", x0=gx - GOAL_HALF_THICK, x1=gx + GOAL_HALF_THICK, y0=-GOAL_Y_EXTENT, y1=GOAL_Y
+        fig.add_shape(type="rect", x0=gx - GOAL_HALF_THICK, x1=gx + GOAL_HALF_THICK, y0=-GOAL_Y_EXTENT, y1=GOAL_Y_EXTENT, line=dict(width=0), fillcolor="red", layer="below")
+
+    # End-zone circles & dots
+    ez_r = 15.0
+    ez_centers = [(-69, 22), (-69, -22), (69, 22), (69, -22)]
+    for cx, cy in ez_centers:
+        fig.add_shape(type="circle", x0=cx - ez_r, x1=cx + ez_r, y0=cy - ez_r, y1=cy + ez_r, line=dict(color="red", width=2), fillcolor="rgba(0,0,0,0)", layer="below")
+    DOT_R = 1.0
+    for cx, cy in ez_centers:
+        fig.add_shape(type="circle", x0=cx - DOT_R, x1=cx + DOT_R, y0=cy - DOT_R, y1=cy + DOT_R, line=dict(width=0), fillcolor="red", layer="below")
+    nz_spots = [(-20, 22), (-20, -22), (20, 22), (20, -22)]
+    for cx, cy in nz_spots:
+        fig.add_shape(type="circle", x0=cx - DOT_R, x1=cx + DOT_R, y0=cy - DOT_R, y1=cy + DOT_R, line=dict(width=0), fillcolor="blue", layer="below")
+
+    # Center-ice circle & dot
+    center_r = 15.0
+    fig.add_shape(type="circle", x0=-center_r, x1=center_r, y0=-center_r, y1=center_r, line=dict(color="blue", width=2), fillcolor="rgba(0,0,0,0)", layer="below")
+    fig.add_shape(type="circle", x0=-DOT_R, x1=DOT_R, y0=-DOT_R, y1=DOT_R, line=dict(width=0), fillcolor="blue", layer="below")
+
+    # Goal creases
+    crease_radius = 6
+    crease_color = "rgba(25, 118, 210, 0.55)"
+    theta = np.linspace(-np.pi / 2, np.pi / 2, 50)
+    x_left = -89 + crease_radius * np.cos(theta); y_left = 0 + crease_radius * np.sin(theta)
+    fig.add_trace(go.Scatter(x=x_left, y=y_left, fill="toself", mode="lines", line=dict(color="rgba(0,0,0,0)"), fillcolor=crease_color, showlegend=False, hoverinfo="skip", opacity=0.7))
+    x_right = 89 - crease_radius * np.cos(theta); y_right = 0 + crease_radius * np.sin(theta)
+    fig.add_trace(go.Scatter(x=x_right, y=y_right, fill="toself", mode="lines", line=dict(color="rgba(0,0,0,0)"), fillcolor=crease_color, showlegend=False, hoverinfo="skip", opacity=0.7))
+
+    # Background
+    ARENA_BG = "#E9ECEF"
+    fig.update_layout(
+        plot_bgcolor=ARENA_BG, paper_bgcolor=ARENA_BG,
+        margin=dict(l=10, r=10, t=20, b=10), height=520,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(color="black"), bgcolor="rgba(0,0,0,0)", borderwidth=0),
+        hoverlabel=dict(font=dict(color="white"), bgcolor="rgba(0,0,0,0.7)"),
+    )
+
+    # ---- Scatter data & render ----
+    if not filtered.empty:
+        def _hover_row(r):
+            team = r.get("team") or ""
+            data_dates = st.session_state.get("data_dates")
+            if "source_date" in r and isinstance(r["source_date"], str) and r["source_date"]:
+                date_str = r["source_date"]
+            elif isinstance(data_dates, (_date,)):
+                date_str = data_dates.isoformat()
+            else:
+                date_str = ""
+            period = r.get("period")
+            try:
+                pnum = int(period) if pd.notna(period) else None
+            except Exception:
+                pnum = None
+            ptime = (r.get("periodTime") or "").strip()
+            when = f"P{pnum} {ptime}".strip() if pnum else ptime
+            stg = r.get("strength")
+            stg = stg if isinstance(stg, str) and stg.strip() and stg.upper() != "UNKNOWN" else None
+            pieces = []
+            if team: pieces.append(team)
+            if date_str: pieces.append(date_str)
+            if when: pieces.append(when)
+            if stg: pieces.append(stg)
+            return "<br>".join(pieces)
+
+        non_goals = filtered[filtered["is_goal"] != 1] if "is_goal" in filtered else filtered
+        goals = filtered[filtered["is_goal"] == 1] if "is_goal" in filtered else filtered.iloc[0:0]
+
+        if not non_goals.empty:
+            fig.add_trace(go.Scatter(
+                x=non_goals.get("x", []), y=non_goals.get("y", []),
+                mode="markers",
+                marker=dict(
+                    color=[TEAM_COLORS.get(t, "#888888") for t in non_goals.get("team", pd.Series([""] * len(non_goals))).fillna("")],
+                    size=7, opacity=0.8, line=dict(color="black", width=0.8),
+                ),
+                text=[_hover_row(r) for _, r in non_goals.iterrows()],
+                hovertemplate="%{text}<extra></extra>",
+                name="Shots",
+            ))
+        if not goals.empty:
+            fig.add_trace(go.Scatter(
+                x=goals.get("x", []), y=goals.get("y", []),
+                mode="markers",
+                marker=dict(
+                    color=[TEAM_COLORS.get(t, "#888888") for t in goals.get("team", pd.Series([""] * len(goals))).fillna("")],
+                    size=9, opacity=0.95, symbol="star", line=dict(color="black", width=1.0),
+                ),
+                text=[_hover_row(r) for _, r in goals.iterrows()],
+                hovertemplate="%{text}<extra></extra>",
+                name="Goals",
+            ))
+
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.plotly_chart(fig, use_container_width=True)
+        st.info("No data for the selected date(s).")
+
+# ---------- Export ----------
+with left:
+    st.subheader("Export")
+    if not filtered.empty:
+        csv_buf = StringIO()
+        filtered.to_csv(csv_buf, index=False)
+        st.download_button(
+            "Download filtered shots CSV",
+            data=csv_buf.getvalue(),
+            file_name="shots_filtered.csv",
+            mime="text/csv",
+        )
+    else:
+        st.caption("No filtered rows to export.")
+
+# ---------- Optional: summarized table for ranges ----------
+if not filtered.empty and isinstance(st.session_state.get("data_dates"), tuple):
+    st.subheader("Player summary (selected range)")
+    summary = (
+        filtered.groupby(["player", "team"], dropna=False)
+        .agg(shots=("player", "size"), goals=("is_goal", "sum"))
+        .reset_index()
+        .sort_values(["shots", "goals"], ascending=[False, False])
+    )
+    st.dataframe(summary, use_container_width=True, height=260)
+
+# ---------- Debug (optional) ----------
+with st.expander("Debug strength (dev only)"):
+    if not df.empty and "strength" in df.columns:
+        st.write(df["strength"].value_counts(dropna=False).head(30))
+        st.caption("Strength is computed via a penalty timeline from StatsAPI (minors/majors, PP goal cancels a minor).")
+
+# Footer
+st.caption(
+    f"Rows: {len(filtered)} • "
+    f"Filters → players: {'custom' if (st.session_state.get('shots_df') is not None and selected_players) else 'All'}, "
+    f"goals_only: {bool(goals_only)}"
+)
