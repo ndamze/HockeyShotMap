@@ -1,19 +1,31 @@
 
+import sys, os, importlib, traceback
 import streamlit as st
+
+# Ensure this pages directory is importable (so `_shared.py` in the same folder can be imported)
+_PAGES_DIR = os.path.dirname(__file__)
+if _PAGES_DIR not in sys.path:
+    sys.path.append(_PAGES_DIR)
+
+try:
+    _shared = importlib.import_module("_shared")
+    fetch_shots_dataframe = _shared.fetch_shots_dataframe
+    # Optional helpers (some pages won't use all of these)
+    list_teams       = getattr(_shared, "list_teams", None)
+    list_players     = getattr(_shared, "list_players", None)
+    list_goalies     = getattr(_shared, "list_goalies", None)
+    summarize_team   = getattr(_shared, "summarize_team", None)
+    summarize_player = getattr(_shared, "summarize_player", None)
+    summarize_goalie = getattr(_shared, "summarize_goalie", None)
+except Exception as e:
+    st.error("Failed to import `_shared.py`. See details below:")
+    st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
+    st.stop()
+
 import pandas as pd
 import numpy as np
 import plotly.express as px
-
 from datetime import date, timedelta
-
-# Try to import shared utils (bundled in these pages)
-try:
-    from _shared import (
-        fetch_shots_dataframe, list_teams, summarize_team
-    )
-except Exception:
-    st.error("Missing _shared utilities. Make sure _shared.py is present alongside this page.")
-    st.stop()
 
 st.set_page_config(page_title="Team Overview", page_icon="🏒", layout="wide")
 st.title("Team Overview")
@@ -27,6 +39,9 @@ with st.sidebar:
         st.warning("Start date is after end date. Adjusting.")
         start, end = end, start
     df = fetch_shots_dataframe(start, end)
+    if list_teams is None:
+        st.error("`list_teams` missing in _shared.py")
+        st.stop()
     teams = ["— select —"] + list_teams(df)
     team = st.selectbox("Team", teams)
 
@@ -41,7 +56,7 @@ col1, col2, col3, col4 = st.columns(4)
 shots = int(team_df["isSOG"].sum())
 goals = int(team_df["isGoal"].sum())
 sh_pct = (goals / shots) if shots else 0.0
-xg = float(team_df["xG"].sum())
+xg = float(team_df["xG"].sum()) if "xG" in team_df else 0.0
 
 col1.metric("Shots (SOG)", f"{shots:,}")
 col2.metric("Goals", f"{goals:,}")
@@ -52,7 +67,13 @@ st.markdown("---")
 
 # Strength breakdown table
 st.subheader("By Strength")
-strength_tbl = summarize_team(df, team)
+if summarize_team is None:
+    st.warning("`summarize_team` not found in _shared.py; showing raw table.")
+    strength_tbl = (team_df.groupby("strength")
+                    .agg(Shots=("isSOG","sum"), Goals=("isGoal","sum"), xG=("xG","sum"))
+                    .reset_index())
+else:
+    strength_tbl = summarize_team(df, team)
 st.dataframe(strength_tbl, use_container_width=True)
 
 # Heatmap (shot density)
