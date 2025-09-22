@@ -638,6 +638,10 @@ if "initialized" not in st.session_state:
     st.session_state["data_df"] = df_live
     st.session_state["games_count"] = games_boot
     st.session_state["parser_label"] = parser_label_boot if not df_live.empty else None
+    # === expose data & dates for the new pages ===
+    st.session_state["shots_df"] = df_live
+    st.session_state["selected_start_date"] = _date.today()
+    st.session_state["selected_end_date"] = _date.today()
 
 # ---------- Load (refetch if button clicked) ----------
 parser_label = st.session_state.get("parser_label")
@@ -657,6 +661,14 @@ if fetch_click:
         st.session_state["games_count"] = games_count
         st.session_state["parser_label"] = None if df_live.empty else parser_label
         df = df_live.copy()
+        # === expose data & dates for the new pages ===
+        st.session_state["shots_df"] = df_live
+        if mode == "Single day":
+            st.session_state["selected_start_date"] = picked
+            st.session_state["selected_end_date"] = picked
+        else:
+            st.session_state["selected_start_date"] = start_date
+            st.session_state["selected_end_date"] = end_date
 
 # Ensure df has required columns even if empty
 for col in REQUIRED_COLS:
