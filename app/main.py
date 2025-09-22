@@ -78,7 +78,7 @@ def _parse_mmss(s: str | None) -> int:
     if not s or ":" not in s:
         return 0
     m, ss = s.split(":", 1)
-    return max(0, _safe_int(m) * 60 + _safe_int(ss))
+    return max(0, (_safe_int(m) or 0) * 60 + (_safe_int(ss) or 0))
 
 def _game_seconds(period: int | None, period_time: str | None) -> int:
     """Absolute game seconds since 0:00 of P1."""
@@ -88,7 +88,7 @@ def _game_seconds(period: int | None, period_time: str | None) -> int:
 def _norm_strength_final(label: str | None) -> str:
     """
     Normalize to: 5v5, PP, PK, 4v4, 3v3, 6v5, 5v6, etc.
-    Unknown/missing values *do not* collapse to 5v5 here.
+    Unknown/missing stays 'Unknown' (we do NOT collapse to 5v5).
     """
     if not label:
         return "Unknown"
@@ -106,48 +106,60 @@ def _norm_strength_final(label: str | None) -> str:
     m = re.match(r"^(\d+)v(\d+)$", l)
     if m:
         a, b = int(m.group(1)), int(m.group(2))
-        if a == b:
-            return f"{a}v{b}"
-        # we don't know the shooter side here; keep numeric
         return f"{a}v{b}"
     if l in {"unknown", "unk", "n/a", "na", "null", "none"}:
         return "Unknown"
     return l.upper()
 
 # =========================
-# StatsAPI → Manpower simulation
+# Team identity helpers (use IDs, not names)
 # =========================
 
-def _home_away_codes(feed: dict) -> tuple[str | None, str | None]:
-    gd = feed.get("gameData") or {}
-    teams = gd.get("teams") or {}
-    home = (teams.get("home") or {}).get("triCode")
-    away = (teams.get("away") or {}).get("triCode")
-    return home, away
+def _team_identity(feed: dict):
+    """
+    Returns:
+      home_id, away_id, id_to_tricode (dict[int,str]), matchup (e.g., 'NYR @ BOS')
+    """
+    id_to_tricode: dict[int, str] = {}
+    game = (feed.get("gameData") or {}).get("teams") or {}
+    home = game.get("home") or {}
+    away = game.get("away") or {}
+    home_id = _safe_int(home.get("id"))
+    away_id = _safe_int(away.get("id"))
+    home_tri = (home.get("triCode") or home.get("abbreviation") or "").strip() or None
+    away_tri = (away.get("triCode") or away.get("abbreviation") or "").strip() or None
+    if home_id and home_tri:
+        id_to_tricode[home_id] = home_tri
+    if away_id and away_tri:
+        id_to_tricode[away_id] = away_tri
+    matchup = f"{away_tri} @ {home_tri}" if (home_tri and away_tri) else None
+    return home_id, away_id, id_to_tricode, matchup
 
-def _rows_from_statsapi_with_manpower(feed: dict) -> tuple[list[dict], str | None]:
-    """
-    Build shots/misses/goals and compute strength from a simulated penalty timeline.
-    Implements: active minors/majors + 'minor ends on PP goal'.
-    Returns (rows, matchup).
-    """
+def _label_for_team_id(team_id: int | None, id_to_tri: dict[int, str], fallback_name: str | None) -> str:
+    if team_id in id_to_tri:
+        return id_to_tri[team_id]
+    if isinstance(fallback_name, str) and fallback_name.strip():
+        return fallback_name.strip()
+    return "UNK"
+
+# =========================
+# StatsAPI → Manpower simulation (fixed to use team IDs)
+# =========================
+
+def _rows_from_statsapi_with_manpower(feed: dict) -> list[dict]:
     rows: list[dict] = []
-    plays = (feed.get("liveData") or {}).get("plays", {}) or {}
+    live = (feed.get("liveData") or {})
+    plays = (live.get("plays") or {})
     all_plays = plays.get("allPlays") or []
     if not all_plays:
-        return rows, None
+        return rows
 
-    home_code, away_code = _home_away_codes(feed)
-    matchup = None
-    if home_code and away_code:
-        matchup = f"{away_code} @ {home_code}"
+    home_id, away_id, id_to_tri, matchup = _team_identity(feed)
 
-    # Active penalties (segments) at current time
-    # Each segment: {"end": int_seconds, "type": "minor"/"major"}
-    active_home: list[dict] = []
+    # active/pending penalties by side (HOME, AWAY)
+    active_home: list[dict] = []   # each: {"end": int, "type": "minor"/"major"}
     active_away: list[dict] = []
-    # Pending segments (for double minors' second half etc.)
-    pending_home: list[dict] = []
+    pending_home: list[dict] = []  # each: {"start": int, "end": int, "type": "minor"}
     pending_away: list[dict] = []
 
     def _expire_segments(t: int):
@@ -156,7 +168,6 @@ def _rows_from_statsapi_with_manpower(feed: dict) -> tuple[list[dict], str | Non
         active_away = [seg for seg in active_away if seg["end"] > t]
 
     def _activate_pending(t: int):
-        """Move any pending segments whose start <= t to active."""
         def move(pending, active):
             keep = []
             for seg in pending:
@@ -170,70 +181,92 @@ def _rows_from_statsapi_with_manpower(feed: dict) -> tuple[list[dict], str | Non
         pending_away = move(pending_away, active_away)
 
     def _counts_now() -> tuple[int, int]:
-        """Return (home_skaters, away_skaters) from active segments."""
         def minus_five(active_list):
-            # majors and minors both reduce skaters
             return max(3, 5 - len(active_list))
         return minus_five(active_home), minus_five(active_away)
 
     def _is_minor(seg: dict) -> bool:
         return seg.get("type") == "minor"
 
-    def _cancel_one_minor_for(team: str, t: int):
-        """On a PP goal: remove the minor against the short-handed team with smallest remaining time."""
-        target = active_home if team == "HOME" else active_away
+    def _cancel_one_minor_for(side: str, t: int):
+        """On a PP goal: remove the minor with least time left on that (short-handed) side."""
+        target = active_home if side == "HOME" else active_away
         minors = [(i, seg) for i, seg in enumerate(target) if _is_minor(seg)]
         if not minors:
-            return
-        # earliest to expire (smallest remaining)
+            return False
         idx, _seg = min(minors, key=lambda kv: kv[1]["end"])
         del target[idx]
+        return True
 
-    # Iterate plays in chronological order
-    # Build rows for shots/misses/goals, and update penalty state as we go.
+    def _promote_pending_minor_immediate(side: str, t: int):
+        """If a double-minor was in progress and we just ended the first half on a PP goal,
+        immediately start the next minor at time t."""
+        pending = pending_home if side == "HOME" else pending_away
+        if not pending:
+            return
+        # pick the earliest pending minor
+        idx = None
+        earliest = None
+        for i, seg in enumerate(pending):
+            if seg.get("type") != "minor":
+                continue
+            if earliest is None or seg["start"] < earliest:
+                earliest = seg["start"]; idx = i
+        if idx is None:
+            return
+        seg = pending.pop(idx)
+        dur = seg["end"] - seg["start"]
+        (active_home if side == "HOME" else active_away).append({"end": t + dur, "type": "minor"})
+
+    # Walk plays in order
     for p in all_plays:
         about = p.get("about") or {}
         period = about.get("period")
         period_time = about.get("periodTime")
         t = _game_seconds(period, period_time)
 
-        # First update penalty state to time t
+        # update penalty clocks
         _expire_segments(t)
         _activate_pending(t)
 
         result = p.get("result") or {}
         event = (result.get("eventTypeId") or result.get("event") or "").upper()
 
-        # Penalties: start segments
+        # ---- PENALTY: start segments via team ID (penalized team = play.team)
         if event == "PENALTY":
-            sev = (result.get("penaltySeverity") or "").title()  # 'Minor', 'Major', 'Match', 'Misconduct', etc
+            sev = (result.get("penaltySeverity") or "").title()
             mins = _safe_int(result.get("penaltyMinutes")) or 0
 
-            # Determine penalized side (StatsAPI: the 'team' on the play is the penalized team)
             team_obj = p.get("team") or {}
-            tri = team_obj.get("triCode") or team_obj.get("name")
-            penalized_side = "HOME" if tri and home_code and tri == home_code else (
-                             "AWAY" if tri and away_code and tri == away_code else None)
+            team_id = _safe_int(team_obj.get("id"))
+            team_name = team_obj.get("name") or ""
+            if team_id is None and "triCode" in team_obj:
+                # very rare, but keep a fallback (won't help for side though)
+                team_name = team_obj.get("triCode") or team_name
 
-            # Only penalties that reduce manpower:
-            # Minor (2), Double-minor (4), Major (5), Match (5)
+            penalized_side = None
+            if team_id is not None and (home_id is not None or away_id is not None):
+                if home_id is not None and team_id == home_id:
+                    penalized_side = "HOME"
+                elif away_id is not None and team_id == away_id:
+                    penalized_side = "AWAY"
+
             reduces = False
-            segments: list[tuple[int,int,str]] = []  # (start,end,type)
+            segments: list[tuple[int,int,str]] = []
             if sev == "Minor" and mins in (2, 4):
                 reduces = True
                 if mins == 2:
                     segments.append((t, t + 120, "minor"))
-                else:  # 4 -> two consecutive minors
+                else:  # 4 = double minor -> two consecutive minors
                     segments.append((t, t + 120, "minor"))
                     segments.append((t + 120, t + 240, "minor"))
             elif sev in ("Major", "Match") and mins >= 5:
                 reduces = True
                 segments.append((t, t + mins * 60, "major"))
-            # Misconducts (10) do not reduce manpower
+            # Misconducts etc. do not reduce manpower
 
             if reduces and penalized_side:
                 if penalized_side == "HOME":
-                    # Activate the first segment now; queue the second (if any) to pending
                     if segments:
                         first = segments[0]
                         active_home.append({"end": first[1], "type": first[2]})
@@ -246,18 +279,18 @@ def _rows_from_statsapi_with_manpower(feed: dict) -> tuple[list[dict], str | Non
                     for seg in segments[1:]:
                         pending_away.append({"start": seg[0], "end": seg[1], "type": seg[2]})
 
-            # Done processing penalty; continue to next play
-            continue
+            continue  # done with penalty
 
-        # Build shot/miss/goal rows
+        # ---- SHOT/MISS/GOAL
         if event in {"SHOT", "MISSED_SHOT", "GOAL"}:
             coords = p.get("coordinates") or {}
             x, y = coords.get("x"), coords.get("y")
-            if x is None or y is None:
-                # keep only events with coordinates (for plotting)
-                pass
             team_obj = p.get("team") or {}
-            tri = team_obj.get("triCode") or team_obj.get("name") or ""
+            team_id = _safe_int(team_obj.get("id"))
+            team_name = team_obj.get("name") or ""
+            tri = _label_for_team_id(team_id, id_to_tri, team_name)
+
+            # shooter name
             shooter = None
             for pl in (p.get("players") or []):
                 if pl.get("playerType") in ("Shooter", "Scorer"):
@@ -265,11 +298,15 @@ def _rows_from_statsapi_with_manpower(feed: dict) -> tuple[list[dict], str | Non
                     break
             shooter = shooter or "Unknown"
 
-            # Counts before goal cancellation
+            # counts BEFORE any PP-goal cancellation
             home_cnt, away_cnt = _counts_now()
-            # Label relative to the SHOOTING side
-            shooter_side = "HOME" if tri and home_code and tri == home_code else (
-                           "AWAY" if tri and away_code and tri == away_code else None)
+
+            # determine shooting side by ID
+            if team_id is not None:
+                shooter_side = "HOME" if (home_id is not None and team_id == home_id) else (
+                               "AWAY" if (away_id is not None and team_id == away_id) else None)
+            else:
+                shooter_side = None
 
             if home_cnt == away_cnt:
                 label = f"{home_cnt}v{away_cnt}"
@@ -279,7 +316,6 @@ def _rows_from_statsapi_with_manpower(feed: dict) -> tuple[list[dict], str | Non
                 elif shooter_side == "AWAY":
                     label = "PP" if away_cnt > home_cnt else "PK"
                 else:
-                    # If we can't tell, just keep numeric
                     label = f"{home_cnt}v{away_cnt}"
 
             rows.append(
@@ -294,24 +330,25 @@ def _rows_from_statsapi_with_manpower(feed: dict) -> tuple[list[dict], str | Non
                     "y": float(y) if y is not None else None,
                     "strength": _norm_strength_final(label),
                     "is_goal": 1 if event == "GOAL" else 0,
+                    "matchup": matchup,
                 }
             )
 
-            # If this was a goal on the power play, cancel one opponent MINOR (not major)
+            # PP goal: cancel ONE minor from short-handed side; if it was a double-minor, start next half immediately
             if event == "GOAL" and home_cnt != away_cnt and shooter_side in {"HOME", "AWAY"}:
                 short_side = "AWAY" if home_cnt > away_cnt else "HOME"
-                # Only cancel if the short-handed side has an active MINOR
-                _cancel_one_minor_for(short_side, t)
+                cancelled = _cancel_one_minor_for(short_side, t)
+                if cancelled:
+                    _promote_pending_minor_immediate(short_side, t)
 
-            continue
+            continue  # done with shot-like play
 
-        # For all other events, nothing to record — but still keep the penalty clock updated
-        # (handled at the start of loop)
+        # others: we only needed them to advance the penalty clock
 
-    return rows, matchup
+    return rows
 
 # =========================
-# GameCenter schedule helper (we keep your robust union)
+# Game/Day fetching (schedule union kept)
 # =========================
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -404,7 +441,6 @@ def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
         return pd.DataFrame(columns=REQUIRED_COLS), "no games", 0
 
     frames = []
-    matchup_map: dict[int, str] = {}
     with httpx.Client(timeout=20.0, headers={"User-Agent": "SparkerData-HockeyShotMap/1.0"}, trust_env=True) as c:
         for pk in pks:
             try:
@@ -414,20 +450,20 @@ def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
             except Exception:
                 continue
 
-            rows, matchup = _rows_from_statsapi_with_manpower(feed)
-            if matchup:
-                matchup_map[int(pk)] = matchup
+            rows = _rows_from_statsapi_with_manpower(feed)
             if not rows:
                 continue
             df = pd.DataFrame(rows)
+
             # Enforce schema/order and clip coords
             for col in REQUIRED_COLS:
                 if col not in df.columns:
                     df[col] = pd.NA
             df["x"] = df["x"].clip(-100, 100)
             df["y"] = df["y"].clip(-43, 43)
-            # Override gamePk (if feed lacked it)
+            # Ensure gamePk
             df["gamePk"] = int(pk)
+
             frames.append(df[REQUIRED_COLS])
 
     if not frames:
@@ -437,9 +473,6 @@ def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
     # De-dupe
     key_cols = ["gamePk", "period", "periodTime", "team", "player", "x", "y", "event"]
     shots = shots.drop_duplicates(subset=[c for c in key_cols if c in shots.columns])
-
-    # Add matchup
-    shots["matchup"] = shots["gamePk"].map(lambda pk: matchup_map.get(int(pk)) if pd.notna(pk) else None)
 
     return shots[REQUIRED_COLS], "StatsAPI+Timeline", games_count
 
@@ -462,7 +495,7 @@ def fetch_shots_between(start: _date, end: _date) -> tuple[pd.DataFrame, str, in
     return out[REQUIRED_COLS + ["source_date"]], "StatsAPI+Timeline", games_total
 
 # =========================
-# UI
+# UI (unchanged visuals)
 # =========================
 
 left, right = st.columns([1, 3])
@@ -470,7 +503,6 @@ left, right = st.columns([1, 3])
 with left:
     st.subheader("Date selection")
 
-    # Quick presets
     col_p1, col_p2, col_p3 = st.columns(3)
     with col_p1:
         if st.button("Today"):
@@ -489,7 +521,6 @@ with left:
     preset = st.session_state.pop("_preset", None)
 
     fetch_click = False
-
     if st.button("Force refresh (clear cache)"):
         st.cache_data.clear()
         st.rerun()
@@ -770,15 +801,14 @@ if not filtered.empty and isinstance(st.session_state.get("data_dates"), tuple):
     )
     st.dataframe(summary, use_container_width=True, height=260)
 
-# ---------- Debug (optional) ----------
+# ---------- Debug (quick peek) ----------
 with st.expander("Debug strength (dev only)"):
     if not df.empty and "strength" in df.columns:
-        st.write(df["strength"].value_counts(dropna=False).head(30))
-        st.caption("Strength is computed via a penalty timeline from StatsAPI (minors/majors, PP goal cancels a minor).")
-
+        st.write(df["strength"].value_counts(dropna=False).head(50))
+        st.caption("Strength computed from StatsAPI penalties using team IDs; PP goal ends a MINOR and promotes next half of a double-minor.")
 # Footer
 st.caption(
     f"Rows: {len(filtered)} • "
-    f"Filters → players: {'custom' if (st.session_state.get('shots_df') is not None and selected_players) else 'All'}, "
+    f"Filters → players: {'custom' if (st.session_state.get('shots_df') is not None and 'players' in locals() and len(players)>0) else 'All'}, "
     f"goals_only: {bool(goals_only)}"
 )
