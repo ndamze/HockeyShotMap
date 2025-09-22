@@ -24,20 +24,55 @@ def _find_df() -> pd.DataFrame | None:
             return st.session_state[k]
     return None
 
-def _norm_strength(s: str | None) -> str:
+def _norm_strength(s) -> str:
+    """
+    Normalize any incoming strength label to: 5v5, PP, PK, 4v4, 3v3, 6v5, etc.
+    Unknown/missing values are treated as 5v5 (so you never see UNKNOWN).
+    """
+    import re
     if s is None:
         return "5v5"
-    t = str(s).strip().lower().replace("on","v").replace("-","").replace(" ", "")
-    # common aliases
-    if t in {"ev","even"}: return "5v5"
-    if t in {"pp","powerplay","powerplayadvantage"}: return "PP"
-    if t in {"pk","sh","shorthanded","penaltykill"}: return "PK"
-    # patterns like 4v4, 3v3, 5v4, 6v5 etc.
-    if "v" in t:
-        parts = t.split("v")
-        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-            return f"{parts[0]}v{parts[1]}"
-    return t.upper() if t else "5v5"
+    t = str(s).strip()
+    if t == "":
+        return "5v5"
+
+    l = t.lower()
+    # squash variants: "4-on-4", "4 on 4", "4v4", "4 vs 4"
+    l = l.replace("on", "v").replace("-", "").replace(" ", "")
+    l = l.replace("vs", "v")
+
+    # Unknown-ish -> 5v5
+    if l in {"unknown", "unk", "n/a", "na", "null", "none"}:
+        return "5v5"
+
+    # Common words
+    if l in {"ev", "even", "evenstrength"}:
+        return "5v5"
+    if l in {"pp", "ppg", "powerplay", "powerplayadvantage"}:
+        return "PP"
+    if l in {"pk", "sh", "shg", "shorthanded", "penaltykill"}:
+        return "PK"
+
+    # Numeric patterns
+    m = re.match(r"^(\d+)v(\d+)$", l)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        # classify numeric advantages commonly seen as PP/PK
+        if a == b:
+            return f"{a}v{b}"  # keep 4v4, 3v3 as-is
+        if a > b:
+            return "PP"
+        if a < b:
+            return "PK"
+
+    # Specific numeric advantages seen in feeds
+    if l in {"5v4", "5v3", "4v3", "6v5", "6v4"}:
+        return "PP"
+    if l in {"4v5", "3v5", "3v4", "5v6", "4v6"}:
+        return "PK"
+
+    # Last resort: uppercase known-looking tokens; otherwise default 5v5
+    return "5v5" if l in {"", "ev"} else l.upper()
 
 def _harmonize(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
