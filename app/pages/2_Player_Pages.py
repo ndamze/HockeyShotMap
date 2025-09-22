@@ -1,31 +1,22 @@
-
-import sys, os, importlib, traceback
+import sys, os, traceback
 import streamlit as st
-
-# Ensure this pages directory is importable (so `_shared.py` in the same folder can be imported)
-_PAGES_DIR = os.path.dirname(__file__)
-if _PAGES_DIR not in sys.path:
-    sys.path.append(_PAGES_DIR)
-
-try:
-    _shared = importlib.import_module("_shared")
-    fetch_shots_dataframe = _shared.fetch_shots_dataframe
-    # Optional helpers (some pages won't use all of these)
-    list_teams       = getattr(_shared, "list_teams", None)
-    list_players     = getattr(_shared, "list_players", None)
-    list_goalies     = getattr(_shared, "list_goalies", None)
-    summarize_team   = getattr(_shared, "summarize_team", None)
-    summarize_player = getattr(_shared, "summarize_player", None)
-    summarize_goalie = getattr(_shared, "summarize_goalie", None)
-except Exception as e:
-    st.error("Failed to import `_shared.py`. See details below:")
-    st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
-    st.stop()
-
 import pandas as pd
-import numpy as np
 import plotly.express as px
 from datetime import date, timedelta
+
+# --- import repo loader via adapter ---
+try:
+    from _shared_repo import fetch_shots_dataframe
+    def list_players(df, team=None):
+        s = df[df["team"] == team] if team else df
+        s = s.dropna(subset=["shooterId","shooterName"])
+        return sorted({(int(r["shooterId"]), str(r["shooterName"])) for _, r in s.iterrows()}, key=lambda x:x[1])
+    def list_teams(df): 
+        return sorted([t for t in df["team"].dropna().unique().tolist() if t])
+except Exception as e:
+    st.error("Could not import the repo data adapter (_shared_repo.py).")
+    st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
+    st.stop()
 
 st.set_page_config(page_title="Player Pages", page_icon="🧊", layout="wide")
 st.title("Player Pages")
@@ -38,10 +29,7 @@ with st.sidebar:
     if start > end:
         start, end = end, start
     df = fetch_shots_dataframe(start, end)
-    team = st.selectbox("Team (optional)", ["All"] + (list_teams(df) if list_teams else []))
-    if list_players is None:
-        st.error("`list_players` missing in _shared.py")
-        st.stop()
+    team = st.selectbox("Team (optional)", ["All"] + list_teams(df))
     players = list_players(df, None if team=="All" else team)
     if not players:
         st.info("No players found for the filters.")
@@ -50,7 +38,7 @@ with st.sidebar:
     sel_name = st.selectbox("Player", names)
     pid = dict(players)[sel_name]
 
-subset = df[df["shooterId"]==pid]
+subset = df[df["shooterId"] == pid]
 
 # KPIs
 k1,k2,k3,k4 = st.columns(4)
@@ -75,35 +63,39 @@ if shots >= 1:
                       hover_data=["team","date","period","periodTime","shotType","distance","angle"],
                       title="Shots (normalized toward +x)")
     scat.update_yaxes(scaleanchor="x", scaleratio=1)
-    scat.update_layout(height=550, legend_title_text="Outcome")
     st.plotly_chart(scat, use_container_width=True)
 else:
     st.info("No shots to show.")
 
 # Shot type breakdown
 st.subheader("Shot Type Breakdown")
-shot_types = (subset[subset["isSOG"]]
-              .groupby("shotType").agg(Shots=("isSOG","sum"), Goals=("isGoal","sum"), xG=("xG","sum"))
-              .reset_index()
-              .sort_values("Shots", ascending=False))
+shot_types = (
+    subset[subset["isSOG"]]
+    .groupby("shotType").agg(Shots=("isSOG","sum"), Goals=("isGoal","sum"), xG=("xG","sum"))
+    .reset_index()
+    .sort_values("Shots", ascending=False)
+)
 st.dataframe(shot_types, use_container_width=True)
-
 bar = px.bar(shot_types, x="shotType", y=["Shots","Goals"], barmode="group", title="By Shot Type")
 st.plotly_chart(bar, use_container_width=True)
 
 # Danger breakdown
 st.subheader("Danger Zones")
-dang = (subset[subset["isSOG"]]
-        .groupby("danger").agg(Shots=("isSOG","sum"), Goals=("isGoal","sum"), xG=("xG","sum"))
-        .reset_index()
-        .sort_values("danger"))
+dang = (
+    subset[subset["isSOG"]]
+    .groupby("danger").agg(Shots=("isSOG","sum"), Goals=("isGoal","sum"), xG=("xG","sum"))
+    .reset_index()
+    .sort_values("danger")
+)
 dzbar = px.bar(dang, x="danger", y=["Shots","Goals"], barmode="group", title="By Danger")
 st.plotly_chart(dzbar, use_container_width=True)
 
 # Trend
 st.subheader("Trend")
-trend = (subset[subset["isSOG"]]
-         .groupby("date").agg(Shots=("isSOG","sum"), Goals=("isGoal","sum"), xG=("xG","sum"))
-         .reset_index().sort_values("date"))
+trend = (
+    subset[subset["isSOG"]]
+    .groupby("date").agg(Shots=("isSOG","sum"), Goals=("isGoal","sum"), xG=("xG","sum"))
+    .reset_index().sort_values("date")
+)
 line = px.line(trend, x="date", y=["Shots","Goals","xG"], title="Game-by-Game")
 st.plotly_chart(line, use_container_width=True)
