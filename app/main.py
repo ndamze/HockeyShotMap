@@ -501,9 +501,105 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
 
     return sorted(found)
 
-# ---------- Fetch shots (day / range), add matchup, de-dupe & clean ----------
+# === STRENGTH ENRICHMENT HELPERS ===========================================
+
+def _df_from_statsapi(feed: dict) -> tuple[pd.DataFrame, str | None]:
+    """Return (df, matchup) from StatsAPI feed WITHOUT falling back."""
+    rows = _rows_from_statsapi(feed)
+    if not rows:
+        return _empty_df(), None
+    df = pd.DataFrame(
+        rows,
+        columns=["gamePk","period","periodTime","event","team","player","x","y","strength","is_goal"]
+    )
+    return df, _matchup_from_statsapi(feed)
+
+def _df_from_gamecenter(feed: dict) -> tuple[pd.DataFrame, str | None]:
+    """Return (df, matchup) from GameCenter feed WITHOUT falling back."""
+    rows = _rows_from_gamecenter(feed)
+    if not rows:
+        return _empty_df(), None
+    df = pd.DataFrame(
+        rows,
+        columns=["gamePk","period","periodTime","event","team","player","x","y","strength","is_goal"]
+    )
+    return df, _matchup_from_gamecenter(feed)
+
+def _norm_strength_final(s: str | None) -> str:
+    """Unify to hockey-ish labels: 5v5, PP, PK, 4v4, 3v3, etc. Unknown -> 5v5."""
+    import re
+    if s is None:
+        return "5v5"
+    t = str(s).strip()
+    if t == "":
+        return "5v5"
+    l = t.lower().replace("on","v").replace("-", "").replace(" ", "").replace("vs","v")
+    if l in {"unknown","unk","n/a","na","null","none"}:  return "5v5"
+    if l in {"ev","even","evenstrength"}:                return "5v5"
+    if l in {"pp","ppg","powerplay","powerplayadvantage"}:  return "PP"
+    if l in {"pk","sh","shg","shorthanded","penaltykill"}:  return "PK"
+    m = re.match(r"^(\d+)v(\d+)$", l)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        if a == b: return f"{a}v{b}"           # keep 4v4, 3v3
+        return "PP" if a > b else "PK"         # numeric adv/disadv → PP/PK
+    if l in {"5v4","5v3","4v3","6v5","6v4"}:   return "PP"
+    if l in {"4v5","3v5","3v4","5v6","4v6"}:   return "PK"
+    return "5v5" if l in {"", "ev"} else l.upper()
+
+def _merge_strength_from_gc(df_stats: pd.DataFrame, df_gc: pd.DataFrame) -> pd.DataFrame:
+    """
+    For each StatsAPI row, if strength is missing/Unknown/EV, try to fill from GameCenter
+    using a robust key: (period, periodTime, team, event, round(x,1), round(y,1)).
+    """
+    if df_stats.empty or df_gc.empty:
+        # nothing to enrich
+        out = df_stats.copy()
+        out["strength"] = out.get("strength", pd.Series(index=out.index)).map(_norm_strength_final).fillna("5v5")
+        return out
+
+    def _key_df(d: pd.DataFrame) -> pd.Series:
+        xr = (d["x"].round(1) if "x" in d else 0)
+        yr = (d["y"].round(1) if "y" in d else 0)
+        pt = d.get("periodTime", pd.Series([""] * len(d))).fillna("").astype(str).str.strip()
+        ev = d.get("event", pd.Series([""] * len(d))).fillna("").astype(str)
+        tm = d.get("team", pd.Series([""] * len(d))).fillna("").astype(str)
+        pr = d.get("period", pd.Series([0] * len(d))).fillna(0).astype(int)
+        return pr.astype(str) + "|" + pt + "|" + tm + "|" + ev + "|" + xr.astype(str) + "|" + yr.astype(str)
+
+    gc_keys = _key_df(df_gc)
+    gc_strength = df_gc.get("strength", pd.Series([""] * len(df_gc))).map(_norm_strength_final)
+    gc_map = dict(zip(gc_keys.tolist(), gc_strength.tolist()))
+
+    stats_keys = _key_df(df_stats)
+
+    def _choose(stats_val, key):
+        sv = _norm_strength_final(stats_val) if pd.notna(stats_val) else "5v5"
+        gv = gc_map.get(key)
+        if gv in {"PP","PK","4v4","3v3","6v5"}:
+            return gv
+        # keep Stats if it already says PP/PK/4v4/3v3
+        if sv in {"PP","PK","4v4","3v3","6v5"}:
+            return sv
+        # otherwise, prefer GC if it has anything non-empty; else fall back to stats
+        return gv or sv or "5v5"
+
+    enriched = df_stats.copy()
+    enriched["strength"] = [
+        _choose(enriched.get("strength", pd.Series(index=enriched.index)).iloc[i] if i < len(enriched) else None,
+                stats_keys.iloc[i])
+        for i in range(len(enriched))
+    ]
+    # normalize once more (cheap)
+    enriched["strength"] = enriched["strength"].map(_norm_strength_final)
+    return enriched
+
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
+    """
+    Fetch both StatsAPI and GameCenter for each game, prefer Stats rows but
+    ENRICH strength per play from GameCenter. Returns (shots_df, label, games_count).
+    """
     pks = fetch_game_pks_for_date(d)
     games_count = len(pks)
     if not pks:
@@ -515,45 +611,72 @@ def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
 
     with httpx.Client(timeout=20.0, headers={"User-Agent": "SparkerData-HockeyShotMap/1.0"}, trust_env=True) as c:
         for pk in pks:
-            feed = None
+            feed_stats = None
+            feed_gc = None
+
+            # Try to fetch both feeds (independently)
             try:
                 r = c.get(f"{STATS_BASE}/game/{pk}/feed/live")
                 r.raise_for_status()
-                feed = r.json()
+                feed_stats = r.json()
             except Exception:
-                try:
-                    r = c.get(f"{SITE_BASE}/gamecenter/{pk}/play-by-play")
-                    r.raise_for_status()
-                    feed = r.json()
-                except Exception:
-                    feed = None
-            if not feed:
-                continue
-            df_part, source, matchup = _shots_from_feed(feed)
+                feed_stats = None
+
+            try:
+                r = c.get(f"{SITE_BASE}/gamecenter/{pk}/play-by-play")
+                r.raise_for_status()
+                feed_gc = r.json()
+            except Exception:
+                feed_gc = None
+
+            # Parse separately
+            df_stats, mu_stats = _df_from_statsapi(feed_stats) if feed_stats else (_empty_df(), None)
+            df_gc, mu_gc = _df_from_gamecenter(feed_gc) if feed_gc else (_empty_df(), None)
+
+            # Map matchup (prefer GC, else Stats)
+            matchup = mu_gc or mu_stats
             if matchup:
                 matchup_map[int(pk)] = matchup
-            if not df_part.empty:
-                frames.append(df_part.assign(gamePk=int(pk)))
-                used_sources.add(source)
+
+            # Choose base and enrich
+            if not df_stats.empty:
+                df_base = df_stats
+                if not df_gc.empty:
+                    df_base = _merge_strength_from_gc(df_stats, df_gc)
+                    used_sources.update({"StatsAPI","GameCenter"})
+                else:
+                    # normalize strength anyway
+                    df_base = df_stats.copy()
+                    df_base["strength"] = df_base.get("strength", pd.Series(index=df_base.index)).map(_norm_strength_final).fillna("5v5")
+                    used_sources.add("StatsAPI")
+            elif not df_gc.empty:
+                df_base = df_gc.copy()
+                df_base["strength"] = df_base.get("strength", pd.Series(index=df_base.index)).map(_norm_strength_final).fillna("5v5")
+                used_sources.add("GameCenter")
+            else:
+                continue  # no data for this game
+
+            # attach pk (ensure int), clip coords, keep schema
+            df_base["gamePk"] = int(pk)
+            df_base["x"] = df_base["x"].clip(-100, 100)
+            df_base["y"] = df_base["y"].clip(-43, 43)
+
+            # Ensure required columns exist & order
+            for col in REQUIRED_COLS:
+                if col not in df_base.columns:
+                    df_base[col] = pd.NA
+
+            frames.append(df_base[REQUIRED_COLS])
 
     if not frames:
         return _empty_df(), "no shots", games_count
 
     shots = pd.concat(frames, ignore_index=True)
 
-    # De-dupe & clip
+    # De-dupe & add matchup
     key_cols = ["gamePk", "period", "periodTime", "team", "player", "x", "y", "event"]
     shots = shots.drop_duplicates(subset=[c for c in key_cols if c in shots.columns])
-    shots["x"] = shots["x"].clip(-100, 100)
-    shots["y"] = shots["y"].clip(-43, 43)
-
-    # Add matchup column
     shots["matchup"] = shots["gamePk"].map(lambda pk: matchup_map.get(int(pk)) if pd.notna(pk) else None)
-
-    # Ensure all required columns exist
-    for col in REQUIRED_COLS:
-        if col not in shots.columns:
-            shots[col] = pd.NA
 
     label = "/".join(sorted(used_sources)) if used_sources else "Unknown"
     return shots[REQUIRED_COLS], label, games_count
