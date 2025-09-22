@@ -1,8 +1,18 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
 import math
 from datetime import date, timedelta
+
+# --- Rink plot import with dual-path fallback ---
+try:
+    from app.components.rink_plot import base_rink
+except ModuleNotFoundError:
+    try:
+        from components.rink_plot import base_rink
+    except ModuleNotFoundError:
+        st.error("Could not import rink_plot component. Please ensure the components directory exists.")
+        st.stop()
 
 st.set_page_config(page_title="Goalie Lens", page_icon="🥅", layout="wide")
 st.title("Goalie Lens")
@@ -13,6 +23,19 @@ def _find_df() -> pd.DataFrame | None:
         if k in st.session_state and isinstance(st.session_state[k], pd.DataFrame):
             return st.session_state[k]
     return None
+
+def _norm_strength(s: str | None) -> str:
+    if s is None:
+        return "5v5"
+    t = str(s).strip().lower().replace("on","v").replace("-","").replace(" ", "")
+    if t in {"ev","even"}: return "5v5"
+    if t in {"pp","powerplay","powerplayadvantage"}: return "PP"
+    if t in {"pk","sh","shorthanded","penaltykill"}: return "PK"
+    if "v" in t:
+        parts = t.split("v")
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            return f"{parts[0]}v{parts[1]}"
+    return t.upper() if t else "5v5"
 
 def _harmonize(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
@@ -28,8 +51,10 @@ def _harmonize(df: pd.DataFrame) -> pd.DataFrame:
             out["date"] = pd.to_datetime(out["source_date"], errors="coerce").dt.date
         elif "gameDate" in out.columns:
             out["date"] = pd.to_datetime(out["gameDate"], errors="coerce").dt.date
-    if "strength" not in out.columns:
-        out["strength"] = "EV"
+    if "strength" in out.columns:
+        out["strength"] = out["strength"].map(_norm_strength)
+    else:
+        out["strength"] = "5v5"
 
     # distance / angle / danger for maps
     def _dist_ang(x, y):
@@ -48,12 +73,11 @@ def _harmonize(df: pd.DataFrame) -> pd.DataFrame:
         out[["distance","angle"]] = da.values
 
     if "danger" not in out.columns:
-        def _danger(d, a):
-            if pd.isna(d): return "unknown"
-            if d <= 25 and a <= 30: return "high"
-            if d <= 40 and a <= 45: return "medium"
-            return "low"
-        out["danger"] = out[["distance","angle"]].apply(lambda r: _danger(r["distance"], r["angle"]), axis=1)
+        out["danger"] = out[["distance","angle"]].apply(
+            lambda r: ("high" if (r["distance"] <= 25 and r["angle"] <= 30)
+                       else ("medium" if (r["distance"] <= 40 and r["angle"] <= 45) else "low")),
+            axis=1
+        )
 
     out["isSOG"] = out["isSOG"].astype(bool)
     out["isGoal"] = out["isGoal"].astype(bool)
@@ -74,35 +98,28 @@ with st.sidebar:
     st.date_input("Start date (display only)", start, disabled=True)
     st.date_input("End date (display only)", end, disabled=True)
 
-    # If the dataset doesn't have goalie identifiers, fall back to TEAM-level goalie lens
     has_goalie = (
-        ("goalieId" in df and df["goalieId"].notna().any()) or
-        ("goalieName" in df and df["goalieName"].notna().any())
+        ("goalieName" in df and df["goalieName"].notna().any()) or
+        ("goalieId" in df and df["goalieId"].notna().any())
     )
 
     if has_goalie:
-        # (If you later add goalieName/Id to your main df, this path will kick in automatically)
         s = df.dropna(subset=["goalieName"]) if "goalieName" in df else df.dropna(subset=["goalieId"])
-        unique_goalies = sorted(s["goalieName"].unique().tolist()) if "goalieName" in s else sorted(s["goalieId"].unique().tolist())
-        sel = st.selectbox("Goalie", unique_goalies)
-        if "goalieName" in s:
-            subset = df[df["goalieName"] == sel].copy()
-            goalie_label = sel
-        else:
-            subset = df[df["goalieId"] == sel].copy()
-            goalie_label = str(sel)
+        choices = (sorted(s["goalieName"].unique().tolist()) if "goalieName" in s
+                   else sorted(s["goalieId"].unique().tolist()))
+        sel = st.selectbox("Goalie", choices)
+        subset = (df[df["goalieName"] == sel].copy() if "goalieName" in s else df[df["goalieId"] == sel].copy())
+        goalie_label = sel if isinstance(sel, str) else str(sel)
         mode = "goalie"
     else:
         teams = sorted([t for t in df["team"].dropna().unique().tolist() if t]) if "team" in df else []
         if not teams:
             st.info("No team identifiers found."); st.stop()
         team_sel = st.selectbox("Team (defending aggregate)", teams)
-        # All shots on goal where selected team is defending: matchup contains team, shooter != team
         if "matchup" in df.columns and "team" in df.columns:
             mask = df["isSOG"] & df["matchup"].fillna("").str.contains(team_sel) & (df["team"] != team_sel)
             subset = df[mask].copy()
         else:
-            # Fallback: just take all SOG not by that team (works for single-game views)
             subset = df[(df["isSOG"]) & (df["team"] != team_sel)].copy()
         goalie_label = f"{team_sel} (aggregate)"
         mode = "team"
@@ -126,17 +143,49 @@ c4.metric("xGA (sum xG faced)", f"{xga:.2f}")
 st.caption(f"View: {('Goalie ' + goalie_label) if mode=='goalie' else ('Team aggregate: ' + goalie_label)}")
 st.markdown("---")
 
-# ---- Shot map faced ----
+# ---- Shot Map Faced on rink (hover trimmed) ----
 st.subheader(f"Shot Map Faced – {goalie_label}")
 if {"x","y"}.issubset(subset_sog.columns):
-    scat = px.scatter(
-        subset_sog, x="x", y="y",
-        color=subset_sog["isGoal"].map({True:"Goal Against", False:"Save"}),
-        hover_data=[c for c in ["team","player","date","period","periodTime","strength","distance","angle"] if c in subset_sog.columns],
-        title="Shots Faced (normalized toward +x)"
-    )
-    scat.update_yaxes(scaleanchor="x", scaleratio=1)
-    st.plotly_chart(scat, use_container_width=True)
+    fig = base_rink()
+    cd = subset_sog.reindex(columns=["team","date","period","periodTime","strength"]).fillna("")
+    # saves and goals as separate traces
+    saves_df = subset_sog[~subset_sog["isGoal"]]
+    goals_df = subset_sog[ subset_sog["isGoal"]]
+
+    if not saves_df.empty:
+        cds = saves_df.reindex(columns=["team","date","period","periodTime","strength"]).fillna("")
+        fig.add_trace(go.Scatter(
+            x=saves_df["x"], y=saves_df["y"],
+            mode="markers",
+            marker=dict(size=8, opacity=0.9, line=dict(color="black", width=0.8)),
+            name="Saves",
+            customdata=cds.values,
+            hovertemplate=(
+                "Team: %{customdata[0]}<br>"
+                "Date: %{customdata[1]}<br>"
+                "Period: %{customdata[2]}<br>"
+                "Period Time: %{customdata[3]}<br>"
+                "Strength: %{customdata[4]}<extra></extra>"
+            )
+        ))
+    if not goals_df.empty:
+        cdg = goals_df.reindex(columns=["team","date","period","periodTime","strength"]).fillna("")
+        fig.add_trace(go.Scatter(
+            x=goals_df["x"], y=goals_df["y"],
+            mode="markers",
+            marker=dict(size=10, opacity=0.98, symbol="star", line=dict(color="black", width=1.0)),
+            name="Goals Against",
+            customdata=cdg.values,
+            hovertemplate=(
+                "Team: %{customdata[0]}<br>"
+                "Date: %{customdata[1]}<br>"
+                "Period: %{customdata[2]}<br>"
+                "Period Time: %{customdata[3]}<br>"
+                "Strength: %{customdata[4]}<extra></extra>"
+            )
+        ))
+    fig.update_yaxes(scaleanchor="x", scaleratio=1)
+    st.plotly_chart(fig, use_container_width=True)
 else:
     st.info("No (x,y) coordinates available to draw the map.")
 
@@ -154,16 +203,23 @@ if "distance" in subset_sog.columns:
     bucket["Saves"] = bucket["Faced"] - bucket["GA"]
     bucket["SV%"] = (bucket["Saves"] / bucket["Faced"]).replace([float("inf"), float("-inf")], pd.NA)
     st.dataframe(bucket, use_container_width=True)
-    bar = px.bar(bucket, x="distBucket", y=["Faced","GA","Saves"], barmode="group", title="By Distance")
-    st.plotly_chart(bar, use_container_width=True)
+    fig_b = go.Figure()
+    fig_b.add_bar(x=bucket["distBucket"], y=bucket["Faced"], name="Faced")
+    fig_b.add_bar(x=bucket["distBucket"], y=bucket["GA"], name="GA")
+    fig_b.add_bar(x=bucket["distBucket"], y=bucket["Saves"], name="Saves")
+    fig_b.update_layout(barmode="group", title="By Distance")
+    st.plotly_chart(fig_b, use_container_width=True)
 
-# ---- Goals-against heatmap ----
-if {"x","y","isGoal"}.issubset(subset_sog.columns):
-    st.subheader("Goals Against Heatmap")
-    ga = subset_sog[subset_sog["isGoal"]]
-    if len(ga) >= 1:
-        hm = px.density_heatmap(ga, x="x", y="y", nbinsx=40, nbinsy=20, histfunc="count", title="Goals Against Density")
-        hm.update_yaxes(scaleanchor="x", scaleratio=1)
-        st.plotly_chart(hm, use_container_width=True)
-    else:
-        st.info("No goals against in range.")
+# ---- Goals Against heatmap on rink ----
+st.subheader("Goals Against Heatmap")
+ga = subset_sog[subset_sog["isGoal"]] if "isGoal" in subset_sog.columns else pd.DataFrame()
+if not ga.empty and {"x","y"}.issubset(ga.columns):
+    fig_h = base_rink()
+    fig_h.add_trace(go.Histogram2d(
+        x=ga["x"], y=ga["y"],
+        nbinsx=40, nbinsy=20, opacity=0.85, showscale=True
+    ))
+    fig_h.update_yaxes(scaleanchor="x", scaleratio=1)
+    st.plotly_chart(fig_h, use_container_width=True)
+else:
+    st.info("No goals against in range.")
