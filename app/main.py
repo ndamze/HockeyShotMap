@@ -50,7 +50,6 @@ def _norm_name_value(v) -> str | None:
         s = v.strip()
         return s if s else None
     if isinstance(v, dict):
-        # common GC string containers
         for k in ("default", "en", "English", "EN", "first", "last", "full"):
             if k in v and isinstance(v[k], str) and v[k].strip():
                 return v[k].strip()
@@ -65,27 +64,11 @@ def _full_name(first, last, fallback: str | None = None) -> str:
         return f"{f or ''} {l or ''}".strip()
     return fallback or "Unknown"
 
-def _normalize_strength_label(label: str | None) -> str:
-    # Used inside StatsAPI rows (goals often have this, shots often not)
-    if not label:
-        return "Unknown"
-    l = str(label).strip().lower()
-    mapping = {
-        "even": "5v5", "ev": "5v5",
-        "power play": "PP", "pp": "PP",
-        "short handed": "PK", "sh": "PK", "penalty kill": "PK",
-    }
-    if l in mapping:
-        return mapping[l]
-    # e.g., "4-on-4", "4v4", "3v3", "5on3"
-    l = l.replace("on", "v").replace("-", "").replace(" ", "")
-    return l.upper()
-
 # === Final normalizer applied before returning data ===
 def _norm_strength_final(s: str | None) -> str:
     """
     Normalize any incoming strength label to: 5v5, PP, PK, 4v4, 3v3, 6v5, etc.
-    Unknown/missing values are treated as 5v5.
+    Unknown/missing values become 5v5 (only as a last resort).
     """
     import re
     if s is None:
@@ -97,7 +80,7 @@ def _norm_strength_final(s: str | None) -> str:
     l = t.lower()
     # squash variants
     l = l.replace("on", "v").replace("-", "").replace(" ", "")
-    l = l.replace("vs", "v")
+    l = l.replace("x", "v").replace("vs", "v")  # handle 5x4, 5 vs 4
 
     # Unknown-ish -> 5v5
     if l in {"unknown", "unk", "n/a", "na", "null", "none"}:
@@ -117,7 +100,6 @@ def _norm_strength_final(s: str | None) -> str:
         a, b = int(m.group(1)), int(m.group(2))
         if a == b:
             return f"{a}v{b}"  # keep 4v4, 3v3, etc.
-        # advantage/disadvantage -> generic PP/PK
         return "PP" if a > b else "PK"
 
     # Specific numeric advantages seen in feeds
@@ -126,7 +108,6 @@ def _norm_strength_final(s: str | None) -> str:
     if l in {"4v5", "3v5", "3v4", "5v6", "4v6"}:
         return "PK"
 
-    # Last resort
     return "5v5" if l in {"", "ev"} else l.upper()
 
 # =========================
@@ -158,7 +139,8 @@ def _rows_from_statsapi(feed: dict) -> list[dict]:
                 shooter = (pl.get("player") or {}).get("fullName")
                 break
 
-        strength = _normalize_strength_label(((p.get("result") or {}).get("strength") or {}).get("name"))
+        # StatsAPI usually only sets strength on GOALS
+        strength = ((p.get("result") or {}).get("strength") or {}).get("name")
 
         rows.append(
             {
@@ -222,33 +204,65 @@ def _gc_team_maps(feed: dict) -> tuple[dict[int, str], int | None, int | None]:
                     away_id = tid
     return id_to_abbrev, home_id, away_id
 
-def _gc_roster_map(feed: dict) -> dict[int, str]:
-    roster: dict[int, str] = {}
-    for spot in feed.get("rosterSpots") or []:
-        if not isinstance(spot, dict):
-            continue
-        pid = spot.get("playerId")
-        fn, ln = spot.get("firstName"), spot.get("lastName")
-        full = _full_name(fn, ln)
-        if isinstance(pid, int) and full and full != "Unknown":
-            roster[pid] = full
-    for team_key in ("homeTeam", "awayTeam"):
-        team = feed.get(team_key)
-        if not isinstance(team, dict):
-            continue
-        for subkey in ("sroster", "roster", "lineup"):
-            arr = team.get(subkey)
-            if not isinstance(arr, list):
-                continue
-            for item in arr:
-                if not isinstance(item, dict):
-                    continue
-                pid = item.get("playerId") or item.get("id")
-                full = (_norm_name_value(item.get("playerName"))
-                        or _full_name(item.get("firstName"), item.get("lastName")))
-                if isinstance(pid, int) and full and full != "Unknown":
-                    roster[pid] = full
-    return roster
+def _coerce_int(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+def _strength_from_gc_play(p: dict, owner_team_id: int | None, home_id: int | None, away_id: int | None) -> str:
+    """
+    Extract strength from as many GC fields as possible, then fall back to skater counts.
+    """
+    det = p.get("details") or {}
+
+    # 1) Direct string labels/codes in multiple possible spots
+    candidates = []
+    for cand in [
+        det.get("strength"),
+        det.get("situationCode"),
+        p.get("situationCode"),
+        (det.get("manpower") or {}).get("situationCode") if isinstance(det.get("manpower"), dict) else None,
+        (p.get("manpower") or {}).get("situationCode") if isinstance(p.get("manpower"), dict) else None,
+    ]:
+        if cand:
+            candidates.append(str(cand))
+
+    for s in candidates:
+        norm = _norm_strength_final(s)
+        # If we got a specific label, use it
+        if norm in {"PP", "PK", "4v4", "3v3", "6v5", "5v6", "5v5"}:
+            # Map 5v6 back to PK, 6v5 to PP by final normalizer; but if it slips through, normalize again:
+            return _norm_strength_final(norm)
+
+    # 2) Numeric counts scattered in different places
+    hs = _coerce_int(det.get("homeSkaters")) or _coerce_int(det.get("homePlayerCount")) or _coerce_int(p.get("homeSkaters")) or _coerce_int(p.get("homePlayerCount"))
+    as_ = _coerce_int(det.get("awaySkaters")) or _coerce_int(det.get("awayPlayerCount")) or _coerce_int(p.get("awaySkaters")) or _coerce_int(p.get("awayPlayerCount"))
+
+    mp = det.get("manpower") or p.get("manpower")
+    if isinstance(mp, dict):
+        hs = hs or _coerce_int(mp.get("home") or mp.get("homeSkaters") or mp.get("homePlayers"))
+        as_ = as_ or _coerce_int(mp.get("away") or mp.get("awaySkaters") or mp.get("awayPlayers"))
+
+    # 3) As a last shot, parse a situation code if present anywhere as digits
+    if not hs or not as_:
+        sc = (det.get("situationCode") or p.get("situationCode") or "")
+        if isinstance(sc, str):
+            nums, cur = [], ""
+            for ch in sc:
+                if ch.isdigit():
+                    cur += ch
+                elif cur:
+                    nums.append(int(cur)); cur = ""
+            if cur:
+                nums.append(int(cur))
+            if len(nums) == 2:
+                hs = hs or nums[0]
+                as_ = as_ or nums[1]
+
+    # 4) Fall back to inference from counts (keeps 4v4/3v3 if equal)
+    det_counts = {"homeSkaters": hs, "awaySkaters": as_, "situationCode": None}
+    return _infer_strength_from_skaters(det_counts, owner_team_id, home_id, away_id)
 
 def _infer_strength_from_skaters(det: dict, owner_team_id: int | None, home_id: int | None, away_id: int | None) -> str:
     """
@@ -256,19 +270,13 @@ def _infer_strength_from_skaters(det: dict, owner_team_id: int | None, home_id: 
     Equal strength: return '5v5', '4v4', '3v3'.
     Advantage: return PP/PK (generic), based on owner team vs opponent counts.
     """
-    def _to_int(v):
-        try:
-            return int(v)
-        except (TypeError, ValueError):
-            return None
-
-    hs = _to_int(det.get("homeSkaters"))
-    as_ = _to_int(det.get("awaySkaters"))
+    hs = _coerce_int(det.get("homeSkaters"))
+    as_ = _coerce_int(det.get("awaySkaters"))
 
     if hs is None or as_ is None:
-        sc = (det.get("situationCode") or "").lower()
+        sc = (det.get("situationCode") or "")
         nums, cur = [], ""
-        for ch in sc:
+        for ch in str(sc):
             if ch.isdigit():
                 cur += ch
             elif cur:
@@ -374,11 +382,7 @@ def _rows_from_gamecenter(feed: dict) -> list[dict]:
         period = pd_desc.get("number")
         period_time = p.get("timeInPeriod") or p.get("timeRemaining") or None
 
-        raw_strength = _norm_name_value(det.get("strength"))
-        if raw_strength:
-            strength = _normalize_strength_label(raw_strength)
-        else:
-            strength = _infer_strength_from_skaters(det, owner_team_id, home_id, away_id)
+        strength = _strength_from_gc_play(p, owner_team_id, home_id, away_id)
 
         rows.append(
             {
@@ -454,7 +458,6 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
 
     # ---- Helpers
     def _safe_str_date(v) -> str | None:
-        # accept "2025-01-13T...", or nested {"$date": "..."}
         if isinstance(v, str) and len(v) >= 10:
             return v[:10]
         if isinstance(v, dict):
@@ -464,17 +467,12 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
         return None
 
     def _is_wanted_game(game: dict) -> bool:
-        # Check common date keys used across the two APIs
-        keys = (
-            "gameDate", "officialDate", "startTimeUTC", "startTimeLocal",
-            "gameDateISO", "gameTime", "gameDateTime"
-        )
+        keys = ("gameDate", "officialDate", "startTimeUTC", "startTimeLocal", "gameDateISO", "gameTime", "gameDateTime")
         for k in keys:
             if k in game:
                 s = _safe_str_date(game.get(k))
                 if s == wanted:
                     return True
-        # Some GameCenter "gameWeek" entries attach day at the week level
         week_day = _safe_str_date(game.get("date"))
         if week_day == wanted:
             return True
@@ -482,34 +480,23 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
 
     def _collect_from_stats_json(data: dict) -> list[int]:
         pks: list[int] = []
-        # Prefer exact day buckets if present
         for day in (data.get("dates") or []):
             day_key = _safe_str_date(day.get("date"))
             for g in (day.get("games") or []):
                 pk = g.get("gamePk")
                 if not pk:
                     continue
-                # If day_key matches, accept blindly; otherwise fall back to per-game key checks
                 if day_key == wanted or _is_wanted_game(g):
                     pks.append(int(pk))
         return pks
 
     def _collect_from_gc_sched(sched: dict) -> list[int]:
-        """
-        GameCenter schedule may return either:
-          - {"games": [...] } (already day-scoped)
-          - {"gameWeek": [{"date": "...", "games":[...]} ...]}
-        """
         pks: list[int] = []
-
-        # Direct "games" list (filter by date keys if present)
         for g in (sched.get("games") or []):
             if _is_wanted_game(g):
                 pk = g.get("id") or g.get("gamePk") or g.get("gameId")
                 if pk:
                     pks.append(int(pk))
-
-        # Weekly buckets
         for wk in (sched.get("gameWeek") or []):
             wk_date = _safe_str_date(wk.get("date"))
             for g in (wk.get("games") or []):
@@ -517,76 +504,41 @@ def fetch_game_pks_for_date(d: _date) -> list[int]:
                     pk = g.get("id") or g.get("gamePk") or g.get("gameId")
                     if pk:
                         pks.append(int(pk))
-
         return pks
 
-    # ---- Strategy: union of 3 sources
     found: set[int] = set()
-
-    # 1) StatsAPI exact date
     try:
         url = f"{STATS_BASE}/schedule?date={wanted}"
         with httpx.Client(timeout=20.0, headers=headers, trust_env=True) as c:
-            r = c.get(url)
-            r.raise_for_status()
+            r = c.get(url); r.raise_for_status()
             found.update(_collect_from_stats_json(r.json()))
     except Exception:
         pass
-
-    # 2) StatsAPI ±1-day range (handles UTC drift / late starts)
     try:
         start = (d - timedelta(days=1)).isoformat()
         end = (d + timedelta(days=1)).isoformat()
         url = f"{STATS_BASE}/schedule?startDate={start}&endDate={end}"
         with httpx.Client(timeout=20.0, headers=headers, trust_env=True) as c:
-            r = c.get(url)
-            r.raise_for_status()
+            r = c.get(url); r.raise_for_status()
             found.update(_collect_from_stats_json(r.json()))
     except Exception:
         pass
-
-    # 3) GameCenter schedule (day)
     try:
         url = f"{SITE_BASE}/schedule/{wanted}"
         with httpx.Client(timeout=20.0, headers=headers, trust_env=True) as c:
-            r = c.get(url)
-            r.raise_for_status()
+            r = c.get(url); r.raise_for_status()
             found.update(_collect_from_gc_sched(r.json()))
     except Exception:
         pass
 
     return sorted(found)
 
-# === Direct parse helpers (used by fetch_shots_for_date) ==================
-
-def _df_from_statsapi(feed: dict) -> tuple[pd.DataFrame, str | None]:
-    """Return (df, matchup) from StatsAPI feed WITHOUT falling back."""
-    rows = _rows_from_statsapi(feed)
-    if not rows:
-        return _empty_df(), None
-    df = pd.DataFrame(
-        rows,
-        columns=["gamePk","period","periodTime","event","team","player","x","y","strength","is_goal"]
-    )
-    return df, _matchup_from_statsapi(feed)
-
-def _df_from_gamecenter(feed: dict) -> tuple[pd.DataFrame, str | None]:
-    """Return (df, matchup) from GameCenter feed WITHOUT falling back."""
-    rows = _rows_from_gamecenter(feed)
-    if not rows:
-        return _empty_df(), None
-    df = pd.DataFrame(
-        rows,
-        columns=["gamePk","period","periodTime","event","team","player","x","y","strength","is_goal"]
-    )
-    return df, _matchup_from_gamecenter(feed)
-
 # ---------- Fetch shots (day / range), prefer GC for strength ----------
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
     """
     Fetch both StatsAPI and GameCenter for each game, prefer GameCenter as base
-    (it has reliable manpower info). Returns (shots_df, label, games_count).
+    (it has manpower info). Returns (shots_df, label, games_count).
     """
     pks = fetch_game_pks_for_date(d)
     games_count = len(pks)
@@ -604,15 +556,13 @@ def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
 
             # Try to fetch both feeds (independently)
             try:
-                r = c.get(f"{STATS_BASE}/game/{pk}/feed/live")
-                r.raise_for_status()
+                r = c.get(f"{STATS_BASE}/game/{pk}/feed/live"); r.raise_for_status()
                 feed_stats = r.json()
             except Exception:
                 feed_stats = None
 
             try:
-                r = c.get(f"{SITE_BASE}/gamecenter/{pk}/play-by-play")
-                r.raise_for_status()
+                r = c.get(f"{SITE_BASE}/gamecenter/{pk}/play-by-play"); r.raise_for_status()
                 feed_gc = r.json()
             except Exception:
                 feed_gc = None
@@ -626,7 +576,7 @@ def fetch_shots_for_date(d: _date) -> tuple[pd.DataFrame, str, int]:
             if matchup:
                 matchup_map[int(pk)] = matchup
 
-            # Choose base (prefer GameCenter for strength), fallback to Stats
+            # Choose base (prefer GameCenter), fallback to Stats
             if not df_gc.empty:
                 df_base = df_gc.copy()
                 used_sources.add("GameCenter")
@@ -868,81 +818,44 @@ with right:
     LINE_HALF_FT = 0.5  # 1 ft total
 
     # Center red line: x in [-0.5, 0.5]
-    fig.add_shape(
-        type="rect",
-        x0=-LINE_HALF_FT, x1=LINE_HALF_FT,
-        y0=RINK_Y_MIN, y1=RINK_Y_MAX,
-        line=dict(width=0),
-        fillcolor="red",
-        layer="below",
-    )
+    fig.add_shape(type="rect", x0=-LINE_HALF_FT, x1=LINE_HALF_FT, y0=RINK_Y_MIN, y1=RINK_Y_MAX, line=dict(width=0), fillcolor="red", layer="below")
 
     # Blue lines: inside edges at ±25 ft, 1 ft thick -> [-26,-25] and [25,26]
     for x0, x1 in [(-26.0, -25.0), (25.0, 26.0)]:
-        fig.add_shape(
-            type="rect",
-            x0=x0, x1=x1,
-            y0=RINK_Y_MIN, y1=RINK_Y_MAX,
-            line=dict(width=0),
-            fillcolor="blue",
-            layer="below",
-        )
+        fig.add_shape(type="rect", x0=x0, x1=x1, y0=RINK_Y_MIN, y1=RINK_Y_MAX, line=dict(width=0), fillcolor="blue", layer="below")
 
     # --- Goal lines (clipped a bit less, so they look longer) ---
     GOAL_X = 89.0
     GOAL_HALF_THICK = 0.167 / 2  # ~2 in
     GOAL_Y_EXTENT = 36.0
-
     for gx in (-GOAL_X, GOAL_X):
-        fig.add_shape(
-            type="rect",
-            x0=gx - GOAL_HALF_THICK, x1=gx + GOAL_HALF_THICK,
-            y0=-GOAL_Y_EXTENT, y1=GOAL_Y_EXTENT,
-            line=dict(width=0),
-            fillcolor="red",
-            layer="below",
-        )
+        fig.add_shape(type="rect", x0=gx - GOAL_HALF_THICK, x1=gx + GOAL_HALF_THICK, y0=-GOAL_Y_EXTENT, y1=GOAL_Y_EXTENT, line=dict(width=0), fillcolor="red", layer="below")
 
     # --- End-zone faceoff circles (red outline) ---
     ez_r = 15.0
     ez_centers = [(-69, 22), (-69, -22), (69, 22), (69, -22)]
     for cx, cy in ez_centers:
-        fig.add_shape(
-            type="circle",
-            x0=cx - ez_r, x1=cx + ez_r,
-            y0=cy - ez_r, y1=cy + ez_r,
-            line=dict(color="red", width=2),
-            fillcolor="rgba(0,0,0,0)",
-            layer="below",
-        )
+        fig.add_shape(type="circle", x0=cx - ez_r, x1=cx + ez_r, y0=cy - ez_r, y1=cy + ez_r, line=dict(color="red", width=2), fillcolor="rgba(0,0,0,0)", layer="below")
 
-    # --- Faceoff dots (end-zone = red, neutral-zone = blue, center-ice = blue) ---
-    DOT_R = 1.0  # ~2 ft diameter
+    # --- Faceoff dots ---
+    DOT_R = 1.0
     for cx, cy in ez_centers:
-        fig.add_shape(type="circle", x0=cx - DOT_R, x1=cx + DOT_R, y0=cy - DOT_R, y1=cy + DOT_R,
-                      line=dict(width=0), fillcolor="red", layer="below")
+        fig.add_shape(type="circle", x0=cx - DOT_R, x1=cx + DOT_R, y0=cy - DOT_R, y1=cy + DOT_R, line=dict(width=0), fillcolor="red", layer="below")
     nz_spots = [(-20, 22), (-20, -22), (20, 22), (20, -22)]
     for cx, cy in nz_spots:
-        fig.add_shape(type="circle", x0=cx - DOT_R, x1=cx + DOT_R, y0=cy - DOT_R, y1=cy + DOT_R,
-                      line=dict(width=0), fillcolor="blue", layer="below")
+        fig.add_shape(type="circle", x0=cx - DOT_R, x1=cx + DOT_R, y0=cy - DOT_R, y1=cy + DOT_R, line=dict(width=0), fillcolor="blue", layer="below")
 
     # Center-ice big blue circle + blue dot
     center_r = 15.0
-    fig.add_shape(type="circle", x0=-center_r, x1=center_r, y0=-center_r, y1=center_r,
-                  line=dict(color="blue", width=2), fillcolor="rgba(0,0,0,0)", layer="below")
-    fig.add_shape(type="circle", x0=-DOT_R, x1=DOT_R, y0=-DOT_R, y1=DOT_R,
-                  line=dict(width=0), fillcolor="blue", layer="below")
+    fig.add_shape(type="circle", x0=-center_r, x1=center_r, y0=-center_r, y1=center_r, line=dict(color="blue", width=2), fillcolor="rgba(0,0,0,0)", layer="below")
+    fig.add_shape(type="circle", x0=-DOT_R, x1=DOT_R, y0=-DOT_R, y1=DOT_R, line=dict(width=0), fillcolor="blue", layer="below")
 
     # --- End-zone hash marks (vertical, above/below circles) ---
-    HASH_LEN = 2.0    # ft
-    EZ_GAP_X = 5.5    # ft left/right of circle center
+    HASH_LEN = 2.0
+    EZ_GAP_X = 5.5
     EZ_OUT   = 0.0
     def _v_tick(x_center: float, y_center: float, color: str):
-        fig.add_shape(type="line",
-                      x0=x_center, y0=y_center - HASH_LEN / 2,
-                      x1=x_center, y1=y_center + HASH_LEN / 2,
-                      line=dict(color=color, width=2),
-                      layer="below")
+        fig.add_shape(type="line", x0=x_center, y0=y_center - HASH_LEN / 2, x1=x_center, y1=y_center + HASH_LEN / 2, line=dict(color=color, width=2), layer="below")
     for cx, cy in ez_centers:
         y_top = cy + ez_r + EZ_OUT
         y_bot = cy - ez_r - EZ_OUT
@@ -953,51 +866,50 @@ with right:
 
     # --- Goal creases (semi-circles; darker) ---
     crease_radius = 6
-    crease_color = "rgba(25, 118, 210, 0.55)"  # darker blue
+    crease_color = "rgba(25, 118, 210, 0.55)"
     theta = np.linspace(-np.pi / 2, np.pi / 2, 50)
     x_left = -89 + crease_radius * np.cos(theta); y_left = 0 + crease_radius * np.sin(theta)
-    fig.add_trace(go.Scatter(x=x_left, y=y_left, fill="toself", mode="lines",
-                             line=dict(color="rgba(0,0,0,0)"), fillcolor=crease_color,
-                             showlegend=False, hoverinfo="skip", opacity=0.7))
+    fig.add_trace(go.Scatter(x=x_left, y=y_left, fill="toself", mode="lines", line=dict(color="rgba(0,0,0,0)"), fillcolor=crease_color, showlegend=False, hoverinfo="skip", opacity=0.7))
     x_right = 89 - crease_radius * np.cos(theta); y_right = 0 + crease_radius * np.sin(theta)
-    fig.add_trace(go.Scatter(x=x_right, y=y_right, fill="toself", mode="lines",
-                             line=dict(color="rgba(0,0,0,0)"), fillcolor=crease_color,
-                             showlegend=False, hoverinfo="skip", opacity=0.7))
+    fig.add_trace(go.Scatter(x=x_right, y=y_right, fill="toself", mode="lines", line=dict(color="rgba(0,0,0,0)"), fillcolor=crease_color, showlegend=False, hoverinfo="skip", opacity=0.7))
 
     # Arena background
     ARENA_BG = "#E9ECEF"
     fig.update_layout(
         plot_bgcolor=ARENA_BG, paper_bgcolor=ARENA_BG,
         margin=dict(l=10, r=10, t=20, b=10), height=520,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-                    font=dict(color="black"), bgcolor="rgba(0,0,0,0)", borderwidth=0),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(color="black"), bgcolor="rgba(0,0,0,0)", borderwidth=0),
         hoverlabel=dict(font=dict(color="white"), bgcolor="rgba(0,0,0,0.7)"),
     )
 
     # ---- Scatter data & render ----
     if not filtered.empty:
-        # Hover text helper
+        # Hover text helper: Team, Date, Period, Time, Strength
         def _hover_row(r):
-            name = r.get("player") or "Unknown"
             team = r.get("team") or ""
+            data_dates = st.session_state.get("data_dates")
+            if "source_date" in r and isinstance(r["source_date"], str) and r["source_date"]:
+                date_str = r["source_date"]
+            elif isinstance(data_dates, (_date,)):
+                date_str = data_dates.isoformat()
+            else:
+                date_str = ""
             period = r.get("period")
             try:
                 pnum = int(period) if pd.notna(period) else None
             except Exception:
                 pnum = None
-            ptime = r.get("periodTime") or ""
+            ptime = (r.get("periodTime") or "").strip()
             when = f"P{pnum} {ptime}".strip() if pnum else ptime
+            stg = r.get("strength")
+            stg = stg if isinstance(stg, str) and stg.strip() else None
+            pieces = []
+            if team: pieces.append(team)
+            if date_str: pieces.append(date_str)
+            if when: pieces.append(when)
+            if stg: pieces.append(stg)
+            return "<br>".join(pieces)
 
-            label = f"{name} ({team})"
-            if when:
-                label += f"<br>{when}"
-            if int(r.get("is_goal", 0) or 0) == 1:
-                stg = r.get("strength")
-                if isinstance(stg, str) and stg and stg != "Unknown":
-                    label += f" — {stg}"
-            return label
-
-        # Separate goals vs non-goals
         non_goals = filtered[filtered["is_goal"] != 1] if "is_goal" in filtered else filtered
         goals = filtered[filtered["is_goal"] == 1] if "is_goal" in filtered else filtered.iloc[0:0]
 
@@ -1006,25 +918,20 @@ with right:
                 x=non_goals.get("x", []), y=non_goals.get("y", []),
                 mode="markers",
                 marker=dict(
-                    color=[TEAM_COLORS.get(t, "#888888")
-                           for t in non_goals.get("team", pd.Series([""] * len(non_goals))).fillna("")],
-                    size=7, opacity=0.8,
-                    line=dict(color="black", width=0.8),
+                    color=[TEAM_COLORS.get(t, "#888888") for t in non_goals.get("team", pd.Series([""] * len(non_goals))).fillna("")],
+                    size=7, opacity=0.8, line=dict(color="black", width=0.8),
                 ),
                 text=[_hover_row(r) for _, r in non_goals.iterrows()],
                 hovertemplate="%{text}<extra></extra>",
                 name="Shots",
             ))
-
         if not goals.empty:
             fig.add_trace(go.Scatter(
                 x=goals.get("x", []), y=goals.get("y", []),
                 mode="markers",
                 marker=dict(
-                    color=[TEAM_COLORS.get(t, "#888888")
-                           for t in goals.get("team", pd.Series([""] * len(goals))).fillna("")],
-                    size=9, opacity=0.95, symbol="star",
-                    line=dict(color="black", width=1.0),
+                    color=[TEAM_COLORS.get(t, "#888888") for t in goals.get("team", pd.Series([""] * len(goals))).fillna("")],
+                    size=9, opacity=0.95, symbol="star", line=dict(color="black", width=1.0),
                 ),
                 text=[_hover_row(r) for _, r in goals.iterrows()],
                 hovertemplate="%{text}<extra></extra>",
@@ -1033,7 +940,6 @@ with right:
 
         st.plotly_chart(fig, use_container_width=True)
     else:
-        # Still show the rink even if there’s no data
         st.plotly_chart(fig, use_container_width=True)
         st.info("No data for the selected date(s).")
 
@@ -1062,6 +968,12 @@ if not filtered.empty and isinstance(st.session_state.get("data_dates"), tuple):
         .sort_values(["shots", "goals"], ascending=[False, False])
     )
     st.dataframe(summary, use_container_width=True, height=260)
+
+# ---------- Debug (optional) ----------
+with st.expander("Debug strength (dev only)"):
+    if not df.empty and "strength" in df.columns:
+        st.write(df["strength"].value_counts(dropna=False).head(20))
+        st.caption("If this shows only 5v5, the feed didn’t include manpower for most shots in your selected dates.")
 
 # Compact footer caption
 st.caption(
