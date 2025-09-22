@@ -1,17 +1,31 @@
 
+import sys, os, importlib, traceback
 import streamlit as st
+
+# Ensure this pages directory is importable (so `_shared.py` in the same folder can be imported)
+_PAGES_DIR = os.path.dirname(__file__)
+if _PAGES_DIR not in sys.path:
+    sys.path.append(_PAGES_DIR)
+
+try:
+    _shared = importlib.import_module("_shared")
+    fetch_shots_dataframe = _shared.fetch_shots_dataframe
+    # Optional helpers (some pages won't use all of these)
+    list_teams       = getattr(_shared, "list_teams", None)
+    list_players     = getattr(_shared, "list_players", None)
+    list_goalies     = getattr(_shared, "list_goalies", None)
+    summarize_team   = getattr(_shared, "summarize_team", None)
+    summarize_player = getattr(_shared, "summarize_player", None)
+    summarize_goalie = getattr(_shared, "summarize_goalie", None)
+except Exception as e:
+    st.error("Failed to import `_shared.py`. See details below:")
+    st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
+    st.stop()
+
 import pandas as pd
 import numpy as np
 import plotly.express as px
 from datetime import date, timedelta
-
-try:
-    from _shared import (
-        fetch_shots_dataframe, list_goalies, list_teams, summarize_goalie
-    )
-except Exception:
-    st.error("Missing _shared utilities. Make sure _shared.py is present alongside this page.")
-    st.stop()
 
 st.set_page_config(page_title="Goalie Lens", page_icon="🥅", layout="wide")
 st.title("Goalie Lens")
@@ -24,7 +38,10 @@ with st.sidebar:
     if start > end:
         start, end = end, start
     df = fetch_shots_dataframe(start, end)
-    team_filter = st.selectbox("Team (optional)", ["All"] + list_teams(df))
+    team_filter = st.selectbox("Team (optional)", ["All"] + (list_teams(df) if list_teams else []))
+    if list_goalies is None:
+        st.error("`list_goalies` missing in _shared.py")
+        st.stop()
     goalies = list_goalies(df, None if team_filter=="All" else team_filter)
     if not goalies:
         st.info("No goalies found for the filters.")
@@ -42,7 +59,7 @@ shots_faced = int(len(subset_sog))
 goals_against = int(subset_sog["isGoal"].sum())
 saves = shots_faced - goals_against
 sv_pct = saves / max(1, shots_faced)
-xga = float(subset_sog["xG"].sum())
+xga = float(subset_sog["xG"].sum()) if "xG" in subset_sog else 0.0
 
 k1.metric("Shots Faced", f"{shots_faced:,}")
 k2.metric("Goals Against", f"{goals_against:,}")
